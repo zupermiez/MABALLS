@@ -5,6 +5,13 @@ ends) see `docs/debug_log.md` - it's not auto-loaded, so consult it deliberately
 you need the full story rather than duplicating it here. Keep this file to current,
 load-bearing state only.
 
+## Git
+
+**Never `git push` unless explicitly instructed in that conversation** — a prior
+commit approval does not carry forward to later ones. **Never add Claude as
+co-author on commits in this repo** (no `Co-Authored-By: Claude` line) — user
+directive, 2026-07-16.
+
 ## Concept
 
 A demo showing Universal Robots + OptiTrack working together in real time: humans throw
