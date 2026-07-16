@@ -192,6 +192,29 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   Dashboard Server (`ur_status.py`/`ur_play.py`) instead.
 - `ur_rtde==1.6.3` pinned in `requirements.txt` (used for read-only state today, plus
   parked `ur_rtde`-based control scripts)
+- **SSH access confirmed working (2026-07-16)**: `root@192.168.20.1`, key auth via
+  `~/.ssh/config` alias `ur12e` (`ssh ur12e`). Must be enabled once on the pendant
+  first (`Settings → Security → Secure Shell`, off by default) and needs
+  `IdentitiesOnly yes` + an explicit `IdentityFile` in the ssh config if the key isn't
+  one of OpenSSH's default-named files — a bare `ssh` silently falls back to password
+  otherwise. Also needs `PubkeyAuthentication yes` in the robot's own
+  `/etc/ssh/sshd_config` (UR's factory image ships this **disabled**, `no`). Used for
+  pulling the robot's own logs, never for anything on the hot control path: see
+  `catch.py`'s `wrap_up_session()`/`pull_robot_session_logs()`. The controller's own
+  logs live at `/root/log_history.txt` (compact `::`-delimited events, codes decoded
+  by `docs/ur_error_codes_en.properties`, extracted from the robot's own
+  `errorcodes-*.jar`) and `/root/polyscope.log` (human-readable, includes explicit
+  `PROTECTIVE_STOP` lines) — both real timestamps, filterable by wall-clock window.
+  `/root/flightreports/*.zip` are UR's own auto-generated incident bundles (full
+  per-joint telemetry, triggered on any fault) but **only the last 5 are kept, oldest
+  evicted on the next trigger** — pull promptly after anything worth keeping.
+  **This is root on a shared robot controller other people also use — be careful.**
+  Treat every SSH session as strictly read-only unless the task explicitly calls for
+  a change: pull/read logs freely, but do not delete, move, or edit anything on the
+  robot (including its own log files, configs, or `sshd_config`) unless specifically
+  instructed to. The `PubkeyAuthentication`/`sshd_config` edit above was one
+  deliberate, user-confirmed exception, not a standing license to reconfigure the
+  box — don't repeat that pattern on other files without being asked again.
 
 ### Working scripts (repo root)
 - `ur_status.py` — status + `--clear` recovery (robotmode/safetymode/programState via
@@ -232,6 +255,11 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   control session** — skips Python's `finally` cleanup, strands the robot's real-time
   thread, causes a protective stop on the next run. See
   [[robot_control_testing_safety]] memory.
+- **The robot controller is shared — other people use it too.** SSH access (see
+  "Network setup" above) is root, on a real, currently-in-use controller. Default to
+  read-only over that link (pulling/reading logs is fine and expected); don't
+  delete, move, or modify anything on the robot — its files, configs, running
+  state — unless the task specifically calls for it.
 - **Blocking `ur_rtde` calls (`moveL`/`moveJ`) aren't interruptible via SIGTERM** —
   a blocking pybind11 C++ call doesn't return control to Python to process a pending
   signal. Use `timeout -s KILL` or plan to manually `kill -9` + recheck status.
@@ -253,6 +281,13 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   `rtde_receive.getSafetyMode()` (must be `1`/NORMAL); a real 2026-07-15 incident
   (see `docs/debug_log.md`) went undetected for ~30s without this check. Any new
   motion code that judges success from speed/position alone should do the same.
+- **A detected fault no longer kills `catch.py`'s session, but it also does NOT
+  auto-clear itself** (2026-07-16 user directive — a prior version auto-cleared via
+  the Dashboard Server; removed on request, clearing a fault is a human decision, not
+  a script's). `wait_for_fault_clear()` blocks, polling `getSafetyMode()`, until
+  *you* clear it on the pendant (or `ur_status.py --clear`), then drives back to the
+  wait pose and resumes on its own. Ctrl-C still aborts at any point, including
+  mid-wait.
 
 ## Catch Integration (perception → robot)
 
@@ -328,7 +363,12 @@ feasibility gate → real `movel` over raw URScript-over-socket). Pre-positions 
 pose (~0.6m reach, catch height ~1.1m floor) at startup, derives the horizontal catch
 plane through that height, and fires ONE max-speed `movel` per throw on the FIRST tick
 where the gate passes (feasible OR possibly-catch) — NOT once a stability check also
-agrees; see "Run recording" below for why that changed 2026-07-15. **Robot position
+agrees; see "Run recording" below for why that changed 2026-07-15. Stopped with
+**Enter (clean stop) or Ctrl-C (emergency abort)** — both converge on the same
+stopl+teardown path (2026-07-16; Enter uses a non-blocking `select()` on stdin each
+tick, not a thread, so nothing is left reading stdin when the end-of-session prompts
+below run). A detected robot fault no longer kills the session — see "Key safety
+rules" `wait_for_fault_clear()`. **Robot position
 comes from RTDE FK only, never mocap** — it's
 validated against a looping Motive *replay* where the tool RB is frozen. Own
 conservative catch envelope (`check_catch_envelope`: reach 0.45–1.20m, base-z
@@ -345,11 +385,36 @@ commanding the *flange* to the funnel's calibrated target, undershooting every c
 the 12cm `tcp_offset` — ball hit the wrist, ~15cm short of the funnel. Fixed in both
 files; `track_rigid_body.py` already did this correctly.
 
+**Payload/CoG is set once via the pendant's Installation → Payload Estimation
+wizard, not by `catch.py`** (2026-07-16) — user decision, "it never changes."
+Unlike `tcp_offset` (which genuinely gets overwritten by other scripts, e.g.
+`calibrate_frames.py` during calibration, so `catch.py` must resend it every run),
+nothing else in this toolchain sets a different payload, and the pendant's value is
+saved in the installation file — no "prior script left the wrong value" hazard to
+guard against here. A wrong payload/CoG (previously the factory default: a
+symmetric point mass, mismatched with the real offset funnel) is the traced root
+cause of a recurring `C153A0`/`C157A0` base-joint protective stop — see
+`docs/debug_log.md` 2026-07-16. If it recurs, check the pendant value first before
+assuming this script's motion parameters are at fault. `check_safety_mode()` also
+now cross-checks the Dashboard Server (not `rtde_r.getSafetyMode()` alone), after
+that same investigation found the RTDE-based fault check lagging a real protective
+stop by ~9s in one session. Neither fix has been validated on the real arm yet —
+dry-run first.
+
 **Run recording (`catch.py --record`)** — off by default; when passed, writes
 `catch_logs/catch_log_<timestamp>.jsonl` (dir auto-created) with one compact JSON object per line covering
-every feasibility tick, gate/commit/refuse decision, throw start/end, and robot move
-(`run_start`/`throw_start`/`tick`/`commit`/`refuse`/`throw_end`/`move`/`run_end`
-event types, see `Recorder`/`rnd()` in `catch.py`). Each line carries a 1-based
+every feasibility tick, gate/commit/refuse decision, throw start/end, robot move, and
+(2026-07-16) the raw per-throw ball trajectory
+(`run_start`/`throw_start`/`tick`/`commit`/`refuse`/`throw_end`/`throw_samples`/`move`/`run_end`
+event types, see `Recorder`/`rnd()` in `catch.py`). `throw_samples` carries every
+`(t,x,y,z)` sample of that throw's flight — captured in `finalize_flight()`
+(`live_trajectory.py`) into `FlightRecord.raw_samples`, not read back out of
+`SharedState.flight_buffer` later, because that buffer is already reset to `[]` by
+the same function by the time any poll-loop consumer notices the state change. The
+point: **a session can now be researched later from `catch_logs/` alone, with no
+need to go back into Motive replay** — replay is still what you'd use for
+camera/marker-level debugging, not for "what did the ball actually do on throw N."
+Each line carries a 1-based
 `"throw"` ordinal — this is the intended key for "what happened on throw N": filter
 the log to `"throw":N` (`jq 'select(.throw==10)'` or plain grep) and cross-reference
 against the Nth throw in a Motive replay of the same session, counting in the same
@@ -376,6 +441,19 @@ ticks against the fixed rule raises commits to 10 of 15; see the "Commit rule" c
 above and `docs/debug_log.md` 2026-07-15 for the full tick-by-tick analysis (including
 one case, throw 12, where the new rule commits to a still-noisy prediction the old gate
 correctly rejected — a real tradeoff, not a pure win).
+
+**Session wrap-up (`wrap_up_session()`, 2026-07-16, on by default — `--no-wrapup` to
+skip)**: once the NatNet/RTDE connections are fully torn down (deliberately outside
+the hot loop and its `try/finally` — nothing here may add latency to the live
+trajectory/feasibility calculation), prompts for an optional session name and a
+free-text description of how it went, then `pull_robot_session_logs()` does one SSH
+round-trip pulling exactly that session's wall-clock-timestamp-filtered slice of the
+robot's own `log_history.txt`/`polyscope.log` (see "SSH access" under Robot Control)
+plus any flight-report zip triggered during it. Lands in
+`robot_logs/sessions/<timestamp>_<name>/` (gitignored, same pattern as
+`catch_logs/`): `notes.txt` (name/description/start/end/throw count) +
+`log_history_slice.txt` + `polyscope_slice.txt` + any pulled flight report. Runs on
+every exit path, including Ctrl-C.
 
 **Recommended order (status as of 2026-07-14):**
 - (1) ✅ **frame registration + rigid bodies — DONE.** `calibrate_frames.py` + `frames.py`
@@ -430,7 +508,7 @@ correctly rejected — a real tradeoff, not a pure win).
 - `ur_rtde`/External Control URCap root cause still open (deprioritized, not urgent —
   raw URScript-over-socket is a working fallback for now). See `docs/debug_log.md`.
 
-## Status (2026-07-15)
+## Status (2026-07-16)
 Real motion works (raw URScript-over-socket, 2026-07-10/11). Trajectory
 fitting/prediction works against recorded and live OptiTrack data.
 
@@ -447,3 +525,12 @@ silently commanding the flange instead of the funnel, undershooting every catch 
 that's the next step, starting with `--dry-run` again on the real arm/throw before
 removing it. Loose end worth tightening before v2: calibration RMSE is 27.7 mm (fine
 for a wide funnel, not a cup).
+
+**2026-07-16 session-robustness pass on `catch.py`** (see "Catch Integration" for
+detail): SSH access to the UR controller confirmed working (key auth, alias `ur12e`)
+and is now used to pull the robot's own `log_history.txt`/`polyscope.log`/flight
+reports; a detected fault no longer kills the session (waits for a human to clear it,
+no auto-clear); Enter now stops a session cleanly alongside Ctrl-C; and every throw's
+raw `(t,x,y,z)` trajectory is captured into `--record`'s JSONL, so a session no
+longer needs a Motive replay to be researched afterward. None of this has been
+exercised on a real live-throw session yet — still the next step.

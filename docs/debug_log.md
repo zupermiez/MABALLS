@@ -732,3 +732,169 @@ Not yet validated against a fresh live session with both fixes in place - the re
 floor removes this specific target from ever being commanded again, and the fault
 detector should turn any *future* incident into an immediate, loud stop instead of a
 silent ~30s blind spot, but neither has been exercised live yet.
+
+## 2026-07-16 — SSH access to the UR controller, robot-side log pulling, and a
+## `catch.py` session-robustness pass (Enter-to-stop, fault-wait instead of
+## hard-halt, session wrap-up, raw trajectory capture)
+
+**SSH access.** Confirmed working: `root@192.168.20.1`, default creds `root`/`easybot`
+per UR's docs (this rig's password had already been changed). Two real gotchas hit
+getting it going:
+1. SSH is **off by default** on e-series - has to be enabled once on the pendant
+   (`Settings → Security → Secure Shell`), and that page is greyed out while the
+   pendant is in Remote Control mode (same "one source of control" ISO reasoning as
+   the Play-button lockout) - had to flip the physical mode switch to Local first.
+2. `ssh-copy-id` installed the key correctly (confirmed via `~/.ssh/authorized_keys`
+   on the robot, correct permissions), but a bare `ssh root@192.168.20.1` still
+   prompted for a password. `ssh -v` showed why: the server's own
+   `Authentications that can continue: password` never even listed `publickey` -
+   `/etc/ssh/sshd_config` had `PubkeyAuthentication no` baked into UR's factory
+   image. Flipped to `yes` + `systemctl restart sshd` (safe - only bounces the SSH
+   daemon, no interaction with `urcontrol`/the real-time motion process) and key auth
+   worked immediately. A `~/.ssh/config` alias (`ur12e`) with an explicit
+   `IdentityFile` was also needed since the key wasn't one of OpenSSH's
+   default-named files (`id_ed25519` etc.) - without that, a bare `ssh`/`scp` never
+   even offers the key.
+
+**What's actually on the robot, once in.** `/root/log_history.txt` is the machine
+log behind PolyScope's Log tab - compact `::`-delimited lines, timestamped, with
+cryptic codes (`C153A0` etc.) decodable via `/root/GUI/bundle/errorcodes-*.jar`
+(pulled out and saved to `docs/ur_error_codes_en.properties` - just grep it, e.g.
+`C153A0` = "Detected by the Base joint... robot could not follow the path"; `C286A1`
+turned out to be a benign motor-encoder homing message, not a fault, despite sitting
+next to real fault codes). `/root/polyscope.log` is the fuller GUI-side log, already
+human-readable including explicit `Flight reporter triggered, safety mode:
+PROTECTIVE_STOP` lines. `/root/flightreports/*.zip` are UR's own auto-generated
+incident bundles - `summary.log` (incident time, program state, active TCP
+offset/payload, URCap versions) plus full `log_history.txt`/`polyscope.log`
+snapshots and per-joint binary telemetry (`robot_metrics/joint*.bin`) - the richest
+single artifact for debugging a real fault. **Caught live**: watched a new report
+evict an old one mid-session - **only the last 5 are kept**, oldest deleted on every
+new trigger, not disk-space-driven (4.9GB free at the time). Pulled all 5
+then-current reports into `robot_logs/flightreports/` (gitignored, local) before they
+could rotate away, including the 2026-07-15 13:45/13:49/15:41/16:55 recordings that
+correspond to the incidents already narrated earlier in this file - those now have
+real forensic backing instead of just notes.
+
+**`catch.py` changes** (user directives, this session):
+1. **Enter-to-stop, alongside Ctrl-C.** `enter_pressed()` does a non-blocking
+   `select()` on stdin each poll tick rather than a background thread blocked on
+   `input()` - deliberate, because a lingering blocked `input()` thread would race
+   the wrap-up prompts (below) on the same stdin once the loop actually exits.
+2. **Fault handling rewritten twice in one session.** First pass added
+   `recover_from_fault()`: auto-clear via the Dashboard Server (mirroring
+   `ur_status.py --clear`'s chain exactly) + drive back to the wait pose + resume,
+   capped at N consecutive auto-clears before hard-exiting. User's actual intent,
+   stated after seeing this: they want to clear the fault **themselves** on the
+   pendant, not have the script do it - "I want to be able to clear the alarm from
+   the robot and keep going." Replaced with `wait_for_fault_clear()`: no
+   dashboard-server calls at all, just polls `check_safety_mode()` and blocks
+   (printing a reminder every 15s) until a human clears it, then drives back to the
+   wait pose and resumes automatically. This fully supersedes the `halt_on_fault()`
+   description earlier in this file (2026-07-15 entry above) - that function no
+   longer exists. Both versions share the reasoning that it's safe to not preserve
+   much fault detail in-process, since the robot's own logs (above) capture full
+   forensic detail regardless and get pulled at session end either way (next point).
+3. **`wrap_up_session()`** - once the NatNet/RTDE connections are fully torn down
+   (deliberately outside the hot loop/`try-finally`, so none of this can add latency
+   to the live trajectory/feasibility calculation), prompts for an optional session
+   name + free-text description, then `pull_robot_session_logs()` does one SSH
+   round-trip pulling that session's wall-clock-timestamp-filtered slice of
+   `log_history.txt`/`polyscope.log` (awk range filter on the embedded timestamps,
+   not a byte-offset diff - simpler, and needs no start-of-session SSH call at all)
+   plus any flight report zip triggered during it, into
+   `robot_logs/sessions/<timestamp>_<name>/`. Runs on every exit path.
+4. **Raw per-throw trajectory capture.** Investigating "should Motive's own data get
+   transferred off the Windows PC" surfaced a real gap: the actual ball position
+   samples (`trajectory.Sample(t,x,y,z)`) were never being persisted anywhere.
+   Worse, they're **not safely recoverable from `SharedState.flight_buffer` at
+   `throw_end`** - `finalize_flight()` (the NatNet callback thread) resets
+   `flight_buffer` to `[]` in the same atomic step that sets `state = "idle"`, so by
+   the time the main poll loop (a separate, slower loop) notices the idle
+   transition and reads `s.flight_buffer`, it's already empty. Fixed at the source:
+   `FlightRecord` (in `live_trajectory.py`, shared by `catch.py`/
+   `catch_feasibility.py`/`visualize_trajectory.py`) gained a `raw_samples` field,
+   populated inside `finalize_flight()` itself - the only point in time it's
+   actually available - and logged by `catch.py` as a new `throw_samples` JSONL
+   event. Verified end-to-end with a synthetic flight (`finalize_flight()` →
+   `FlightRecord.raw_samples` populated, `flight_buffer` empty immediately after,
+   confirming the race) and a real pull of live robot logs. Net effect: a session
+   recorded with `--record` no longer needs a Motive replay to answer "what did the
+   ball actually do on throw N" - full raw trajectory is in the JSONL. Full `.tak`
+   transfer (camera/marker-level data) stays a manual, occasional thing - not worth
+   automating a Windows-side pull for something only needed for rare, deep
+   debugging, unlike the robot logs which the project already leans on constantly.
+
+## 2026-07-16 (session "thu", 12:55-12:59) — recurring `C153A0`/`C157A0` base-joint
+## protective stops, root-caused via flight-report telemetry, plus a real fault-
+## detection bug found along the way
+
+**Symptom**: 4 protective stops in a 12-throw session (`robot_logs/sessions/
+20260716_125504_thu/`), user-reported as "kept hitting some error code very often
+after catching the ball." `log_history_slice.txt` showed `C153A0` (x3, "position
+deviates from path, detected by the Base joint") and `C157A0` (x1, "collision
+detected... Base joint") - decoded via `docs/ur_error_codes_en.properties`. UR's own
+suggestion text for both: "check payload, center of gravity and acceleration
+settings."
+
+**Root cause, found by going past the log text into the flight reports' own
+`realtimedata.csv`** (500Hz joint/TCP telemetry UR auto-captures ~25s before/~5s
+after every incident, in each `recording*.zip`): all 4 trips show the *identical*
+signature - a clean, deliberately-accelerating move starting exactly at the wait
+pose, heading toward a plausible catch-envelope target, tripping the base joint
+240-450ms in, at only ~1.0-1.3 m/s of the commanded 1.5 m/s / 6.0 m/s². This is not
+a physical impact (smooth accel ramp, not a jolt; user confirmed no collision/human
+contact from the Motive side either) - it's the catch movel's own commanded
+acceleration exceeding what the controller's dynamic model will tolerate. Directly
+confirmed for the 4th incident (12:59:00, throw 11) against a real logged `commit`
+event with matching speed/accel params 0.69s earlier. The robot's payload was
+configured as **1.00kg, CoG=[0,0,0]** (a symmetric point mass at the flange) -
+almost certainly wrong for an offset funnel/tool, which is exactly the mismatch that
+makes the expected-vs-actual torque model diverge under a fast movel.
+
+**A second, independent bug found while tracing this**: matching each physical
+trigger (from `log_history`/flight-report timestamps) against `catch.py`'s own
+JSONL `fault`/`fault_cleared` events revealed `check_safety_mode()` (backed by
+`rtde_r.getSafetyMode()`) didn't register any of the 4 faults until a suspiciously
+consistent **~8.87s** after the real trigger - and for throw 11 specifically, the
+logged `move` event for "return to wait" reported `settled: True, fault: None`
+while the robot's own telemetry proves it was frozen in `PROTECTIVE_STOP` that
+entire time. This is the exact "silently stuck arm" bug already described earlier
+in this file (2026-07-15) as fixed - it recurred. Root cause not confirmed (no live
+robot access during this investigation), but the pattern (an RTDE-cached register
+lagging by many seconds after a protective stop) matches known `ur_rtde` staleness
+issues with `RTDEReceiveInterface` around controller-side faults.
+
+**First three incidents' triggering movel never fully identified.** Only the 4th
+incident has a matching `commit` in the JSONL; the first three have no commit or
+move logged in the many seconds beforehand, despite matching telemetry signatures.
+User confirmed no second `catch.py`/control-script instance was running and no
+physical contact occurred. Given the fault-detection lag bug above, the most likely
+explanation is that these *were* real catch movels from throws that DID commit, but
+whose `commit` events landed at a wall-clock time this analysis didn't check
+closely enough while the session's `check_safety_mode()` was itself blind for
+several seconds - not fully closed out, flagged here rather than re-litigated.
+
+**Fixes applied to `catch.py`/`calibrate_frames.py`** (not yet validated on the real
+robot - start with `--dry-run`, then a deliberate bench test before trusting live):
+1. **Payload/CoG fix.** First pass added `--payload-mass`/`--payload-cog` as
+   *required* CLI args plus a new `set_payload_script()` (`calibrate_frames.py`,
+   mirrors `set_tcp_script()`) sent at startup, mirroring how `set_tcp()` has to be
+   resent every run because other scripts leave a different value behind. User's
+   actual intent, stated after seeing this: payload doesn't need resending every
+   run the way TCP does, because nothing else in this toolchain ever sets a
+   different one - "I just put it on the pendant since it never changes." Reverted:
+   `catch.py` no longer touches payload/CoG at all; it's set once via the pendant's
+   Installation → Payload Estimation wizard and trusted to persist (saved in the
+   installation file). `set_payload_script()` removed from `calibrate_frames.py` as
+   dead code. If `C153A0`/`C157A0` recurs, check the pendant's payload value first.
+2. **`check_safety_mode()` now checks the Dashboard Server (port 29999,
+   `dashboard_client.DashboardClient.safetymode()`, stateless per-request query -
+   same mechanism `ur_status.py` already uses) as the primary source of truth**,
+   not `rtde_r.getSafetyMode()` alone - the latter is still read and included in the
+   fault string for comparison/diagnosis. Threaded a persistent `dash` connection
+   (connected at startup alongside `rtde_r`, disconnected in the same `finally` as
+   `rtde_r.disconnect()`) through `move_to()`/`wait_for_fault_clear()`/the main loop.
+3. Not changed: `--accel` (still defaults to 6.0 m/s², already user-configurable) -
+   recommend testing at a lower value once the payload/CoG fix is in place, since
+   that may turn out to be sufficient on its own.

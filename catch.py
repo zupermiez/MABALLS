@@ -40,7 +40,16 @@ how far the target may be from the wait pose. A target failing ANY of these is
 refused and no motion is sent. Motion uses the proven raw-URScript-over-socket path
 (port 30002), fire-and-forget, same as ur_goto_raw.py - there is no persistent
 ur_rtde control session here (rtde_receive is read-only), so the "never force-kill
-a control session" hazard does not apply; Ctrl-C sends a stopl and exits.
+a control session" hazard does not apply; Enter (clean stop) or Ctrl-C (emergency
+abort) both send a stopl and exit the same way.
+
+A detected robot fault (protective stop etc.) no longer hard-kills the session, but
+this script does NOT auto-clear it either - wait_for_fault_clear() just polls and
+blocks until a human clears it on the pendant (or via ur_status.py --clear), then
+drives back to the wait pose and resumes automatically. Deliberately no
+dashboard-server auto-unlock here: clearing a fault is a decision that belongs to
+whoever is standing next to the arm, not a script. Ctrl-C still works at any point,
+including while waiting on a fault.
 
 Run `python3 catch.py --help`. Start with `--dry-run` (no motion at all - logs
 every decision) to validate the wait pose, derived plane, and gating against your
@@ -51,11 +60,16 @@ import argparse
 import json
 import math
 import os
+import re
+import select
 import socket
+import subprocess
+import sys
 import time
 from collections import deque
 from typing import List, Optional
 
+import dashboard_client
 import numpy as np
 import rtde_receive
 from natnet import NatNetClient, DataFrame
@@ -63,7 +77,7 @@ from natnet import NatNetClient, DataFrame
 from live_trajectory import STATE_LOCK, SharedState, add_release_detection_args, make_handler
 from trajectory import AXIS_NAMES
 from frames import mocap_point_to_base
-from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script
+from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script, movej_to_pose_script
 from calibrate_frames import send_urscript, set_tcp_script
 from catch_feasibility import (
     MoveTimeModel, fit_move_time_model, latest_speed_char_json, load_transform,
@@ -113,6 +127,18 @@ DEFAULT_WAIT_POSE = (0.1139, -0.4686, 0.1335, 1.5840, -0.0824, -0.0573)
 # file per session the way speed_char_*.json/png already do.
 CATCH_LOG_DIR = "catch_logs"
 
+# ~/.ssh/config alias set up for the UR controller (key-auth, see docs/debug_log.md) -
+# used ONLY by wrap_up_session()/pull_robot_session_logs(), which runs after the
+# NatNet client and RTDE connection are fully torn down. Never called from the hot
+# loop - see the module docstring's threading rule.
+ROBOT_SSH_HOST = "ur12e"
+ROBOT_LOG_SESSIONS_DIR = os.path.join("robot_logs", "sessions")
+
+# How often to remind the user we're still waiting on a fault to be cleared, and how
+# often to re-check (see wait_for_fault_clear).
+FAULT_WAIT_POLL_S = 0.5
+FAULT_WAIT_REMINDER_S = 15.0
+
 
 def rnd(x, nd: int = 4):
     """Round floats (recursively through lists/tuples/ndarrays/dicts) for compact JSON.
@@ -135,11 +161,16 @@ def rnd(x, nd: int = 4):
 
 class Recorder:
     """Appends one compact JSON object per line to --record's log file: every
-    feasibility tick, gate/commit/refuse decision, throw start/end, and robot move
-    this conductor makes. Deliberately flat and unpretty-printed (not a nested/
+    feasibility tick, gate/commit/refuse decision, throw start/end, robot move, and
+    (as a "throw_samples" event) the raw (t,x,y,z) ball trajectory for the throw this
+    conductor makes. Deliberately flat and unpretty-printed (not a nested/
     human-formatted log) so a later "what happened on throw N" question can be
     answered by grepping/jq-filtering this file for `"throw":N` rather than reading
     a whole run - the point is being cheap for an agent to search, not to look nice.
+    The one exception is "throw_samples", which is intentionally bulkier (the full
+    per-frame trajectory) so a session can be researched later from this file alone -
+    no Motive replay needed - but is its own event type so a plain grep/jq filter for
+    the small event types (tick/commit/throw_end/...) doesn't have to wade through it.
 
     `t` is the NatNet/Motive sample timestamp (the same clock a Motive replay of
     this session re-streams) and `throw` is a 1-based ordinal - both are offered as
@@ -148,6 +179,17 @@ class Recorder:
     rebases them from zero; `throw` (count the Nth throw in the replay, in order) is
     the robust fallback either way.
 
+    `robot_clock` is `rtde_r.getTimestamp()` - the UR controller's own "time elapsed
+    since the controller was started" counter, sampled at the same instant as `wall`
+    on every line (once `attach_rtde()` has been called - see main()). This is the
+    EXACT same clock as the "Timestamp [s]" column in a flight report's
+    `realtimedata.csv` (both come from the controller's real-time process), so any
+    JSONL line can be matched to a row in a pulled `recording*.zip` by robot_clock
+    directly, with no wall<->robot-clock offset to reverse-engineer - see
+    docs/robot_log_formats.md. Added 2026-07-16 after a real investigation
+    (docs/debug_log.md) had to derive that offset empirically, by finding one known
+    event and back-solving, because nothing recorded both clocks at once.
+
     Flushed after every line (not buffered) so a protective stop or Ctrl-C never
     loses the tail of a session - that's exactly the run you'd want to debug most.
     """
@@ -155,11 +197,20 @@ class Recorder:
     def __init__(self, path: Optional[str]):
         self.f = open(path, "a") if path else None
         self.throw = 0
+        self.rtde_r = None  # set via attach_rtde() once the RTDE connection exists
+
+    def attach_rtde(self, rtde_r) -> None:
+        """Call once, right after connecting - see the robot_clock note above. Not
+        passed to __init__ because Recorder is constructed before the RTDE
+        connection exists (so run_start can log record-file setup itself)."""
+        self.rtde_r = rtde_r
 
     def log(self, ev: str, t: Optional[float] = None, **fields) -> None:
         if self.f is None:
             return
-        rec = {"wall": round(time.time(), 3), "t": rnd(t), "throw": self.throw, "ev": ev}
+        robot_clock = self.rtde_r.getTimestamp() if self.rtde_r is not None else None
+        rec = {"wall": round(time.time(), 3), "robot_clock": rnd(robot_clock),
+               "t": rnd(t), "throw": self.throw, "ev": ev}
         for k, v in fields.items():
             rec[k] = rnd(v)
         self.f.write(json.dumps(rec, separators=(",", ":")) + "\n")
@@ -215,14 +266,27 @@ def derive_catch_plane(wait_xyz: np.ndarray, R: np.ndarray, t_vec: np.ndarray) -
     return float(p_mocap[1])  # mocap Y = up
 
 
-# UR safety-mode enum (ur_rtde Robot State docs): 1=NORMAL, everything else is some
-# form of reduced/stopped/faulted state. This cell has no configured reduced-speed
-# safety zones, so NORMAL is the only mode expected during ordinary operation -
-# anything else means a human needs to look at the robot.
-SAFETY_MODE_NORMAL = 1
+class LastNormal:
+    """Mutable box holding the wall-clock time check_safety_mode() last observed
+    the robot in a NORMAL safety mode. Threaded through every check_safety_mode()
+    call site (move_to(), wait_for_fault_clear(), the main loop) so a detected
+    fault can be logged with an honest bound on when it actually started, instead
+    of just whichever `throw` counter happens to be current at DETECTION time.
+
+    Added 2026-07-16: catch_log analysis of a real session found `check_safety_mode`
+    detection lagging the robot's true fault trigger (per its own flight-report
+    telemetry) by several seconds on every incident - long enough to land on the
+    NEXT throw's tick, silently mislabeling which throw actually caused the fault.
+    The dashboard-based check above should make that lag much smaller, but this is
+    the honest fix: record the uncertainty window explicitly rather than trust a
+    single `throw` number. See docs/debug_log.md 2026-07-16.
+    """
+
+    def __init__(self):
+        self.wall = time.time()
 
 
-def check_safety_mode(rtde_r) -> Optional[str]:
+def check_safety_mode(rtde_r, dash, last_normal: "LastNormal") -> Optional[str]:
     """None if the robot's safety mode is NORMAL, else a description of the fault.
 
     A protective stop (or any other non-NORMAL safety mode) freezes the robot in
@@ -236,22 +300,49 @@ def check_safety_mode(rtde_r) -> Optional[str]:
     until the user noticed the fault and cleared it ~30s later. See
     docs/debug_log.md 2026-07-15 for the full trace. Call this anywhere a move's
     success is judged from TCP speed alone.
+
+    Checks the Dashboard Server (port 29999, a stateless per-request query - see
+    ur_status.py) as the primary source of truth, not rtde_r.getSafetyMode() alone.
+    2026-07-16 real incident: on all 4 protective stops in one session, rtde_r's
+    cached safety-mode register kept reading NORMAL for ~9s after the robot's own
+    flight-report telemetry proved it was already frozen in PROTECTIVE_STOP - so
+    move_to() silently reported settled=True/fault=None for a move the robot never
+    actually made. rtde_r.getSafetyMode() is still read and returned for logging/
+    comparison (a divergence between the two is itself worth knowing about), but the
+    dashboard reading is what decides the return value.
+
+    Updates `last_normal.wall` to now whenever NORMAL is observed - see LastNormal.
     """
-    mode = rtde_r.getSafetyMode()
-    if mode != SAFETY_MODE_NORMAL:
-        return f"safety_mode={mode} (not NORMAL) - robot is stopped/faulted, not actually moving"
+    dash_mode = dash.safetymode()  # e.g. "Safetymode: NORMAL"
+    rtde_mode = rtde_r.getSafetyMode()
+    dash_normal = dash_mode.strip().rsplit(":", 1)[-1].strip().upper() == "NORMAL"
+    if not dash_normal:
+        return (f"safety_mode={dash_mode.strip()} (dashboard) / rtde={rtde_mode} - "
+                f"robot is stopped/faulted, not actually moving")
+    last_normal.wall = time.time()
     return None
 
 
-def move_to(pose: List[float], speed: float, accel: float, rtde_r, settle_timeout: float = 8.0):
-    """Blocking movel to an absolute base-frame pose. Returns (settled, fault):
-    fault is a description string (and settled forced False) if a non-NORMAL safety
-    mode is observed at any point in the wait - see check_safety_mode()."""
-    send_script(movel_absolute_script(pose, speed, accel))
+def move_to(pose: List[float], speed: float, accel: float, rtde_r, dash, last_normal: "LastNormal",
+            settle_timeout: float = 8.0):
+    """Blocking movej to an absolute base-frame pose. speed/accel are rad/s, rad/s^2
+    (joint-space) - NOT the m/s, m/s^2 of a movel. Resolved to joints robot-side via
+    get_inverse_kin(pose, qnear=<arm's actual current joints>) - see
+    movej_to_pose_script's docstring for why this replaced a straight movel: this is
+    the wait-pose approach/return path (large, arbitrary-starting-configuration moves),
+    not the short fire-and-forget catch movel, and a movel's straight-line Cartesian
+    interpolation can force an unpredictable, large/fast joint sweep (e.g. the base
+    joint) whenever the arm's real starting configuration is far from what the
+    straight line assumes - a real 2026-07-16 protective stop traced to exactly that.
+    Returns (settled, fault): fault is a description string (and settled forced False)
+    if a non-NORMAL safety mode is observed at any point in the wait - see
+    check_safety_mode()."""
+    qnear = list(rtde_r.getActualQ())
+    send_script(movej_to_pose_script(pose, qnear, speed, accel))
     slow_streak = 0
     start = time.time()
     while time.time() - start < settle_timeout:
-        fault = check_safety_mode(rtde_r)
+        fault = check_safety_mode(rtde_r, dash, last_normal)
         if fault is not None:
             return False, fault
         if max(abs(v) for v in rtde_r.getActualTCPSpeed()) < 0.002:
@@ -264,21 +355,252 @@ def move_to(pose: List[float], speed: float, accel: float, rtde_r, settle_timeou
     return False, None
 
 
-def halt_on_fault(rec: "Recorder", fault: str) -> None:
-    """Log and stop hard on a detected robot fault - never try to auto-resume.
+def wait_for_fault_clear(rec: "Recorder", fault: str, fault_count: int, rtde_r, dash, last_normal: "LastNormal",
+                          wait_pose: List[float], args) -> int:
+    """Block until a detected robot fault (protective stop etc.) is cleared, then
+    drive back to the wait pose and resume - instead of the old halt_on_fault()
+    hard-kill. Deliberately does NOT auto-clear the fault itself (no dashboard-server
+    unlockProtectiveStop() etc.) - that's cleared by hand, on the pendant or via
+    ur_status.py --clear, by whoever is standing next to the arm. This just polls
+    check_safety_mode() and waits, so the session survives a fault instead of dying.
 
-    Consistent with this project's established recovery path (ur_status.py --clear /
-    the pendant - see CLAUDE.md 'Key safety rules'): a human needs to look at the
-    robot, confirm where it actually is, and clear the fault before anything sends
-    it another command.
+    Ctrl-C works throughout (it's just time.sleep() in a loop, no exception
+    swallowed here) if you'd rather abort than wait. Full forensic detail of the
+    fault lives robot-side regardless (log_history.txt, polyscope.log, an
+    auto-generated flight report zip - see docs/debug_log.md) and gets pulled by
+    wrap_up_session() at the end of the run either way.
     """
-    rec.log("fault", reason=fault)
-    raise SystemExit(
-        f"\n!!! ROBOT FAULT DETECTED: {fault}\n"
-        "The robot is not in normal operation - a protective stop or other safety "
-        "event has frozen it. Clear it (ur_status.py --clear or the pendant), confirm "
-        "the arm's actual position, then restart catch.py.\n"
+    while True:
+        fault_count += 1
+        now = time.time()
+        rec.log("fault", reason=fault, fault_count=fault_count, detected_wall=now,
+                last_known_normal_wall=last_normal.wall, max_undetected_s=now - last_normal.wall,
+                note="fault actually started sometime in (last_known_normal_wall, detected_wall] - "
+                     "'throw' above is whichever throw was current at DETECTION time, not necessarily "
+                     "the one that caused it")
+        print(f"\n!!! ROBOT FAULT: {fault}")
+        if now - last_normal.wall > 1.0:
+            print(f"    (undetected for up to {now - last_normal.wall:.1f}s - last confirmed NORMAL "
+                  f"at {time.strftime('%H:%M:%S', time.localtime(last_normal.wall))})")
+        print("    clear it on the pendant (or ur_status.py --clear) - waiting...")
+        waited = 0.0
+        last_reminder = 0.0
+        while check_safety_mode(rtde_r, dash, last_normal) is not None:
+            time.sleep(FAULT_WAIT_POLL_S)
+            waited += FAULT_WAIT_POLL_S
+            if waited - last_reminder >= FAULT_WAIT_REMINDER_S:
+                print(f"    still waiting for the fault to be cleared ({waited:.0f}s)...")
+                last_reminder = waited
+        rec.log("fault_cleared", fault_count=fault_count, waited_s=waited)
+        print(f"    cleared after {waited:.0f}s.")
+        if args.dry_run:
+            break
+        print("    returning to wait pose...")
+        settled, fault2 = move_to(wait_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
+        rec.log("move", purpose="post_fault_recovery", target=wait_pose,
+                speed=args.approach_speed, accel=args.approach_accel, settled=settled, fault=fault2)
+        if fault2 is not None:
+            fault = fault2  # faulted again immediately (e.g. still on an obstruction) - wait again
+            continue
+        if not settled:
+            print("    WARNING: did not settle at wait pose within timeout after recovery.")
+        break
+    print("    resumed. ready for next throw.\n")
+    return fault_count
+
+
+def enter_pressed() -> bool:
+    """Non-blocking: True if the user hit Enter on stdin since the last call.
+
+    Used as the normal/clean way to stop a session (in addition to Ctrl-C, which
+    still works as an emergency abort - both paths converge on the same
+    stopl+teardown+wrap-up code). select() on stdin rather than a background thread
+    blocked on input() specifically so nothing is left reading stdin afterward -
+    wrap_up_session() below also calls input(), and two readers racing on the same
+    stdin would be a real bug, not just untidy.
+    """
+    if not sys.stdin.isatty():
+        return False
+    ready, _, _ = select.select([sys.stdin], [], [], 0)
+    if ready:
+        sys.stdin.readline()
+        return True
+    return False
+
+
+def pull_robot_session_logs(start_wall: float, end_wall: float, out_dir: str) -> List[str]:
+    """Pull the slice of the robot's own log_history.txt / polyscope.log covering
+    this session's wall-clock window (both files carry real timestamps - see
+    CLAUDE.md 'Run recording'), plus any flight-report zip auto-generated during it
+    (created on a fault - see docs/debug_log.md; only the last 5 are kept, oldest
+    evicted on the next trigger, so pulling promptly matters). One SSH round-trip,
+    called only from wrap_up_session() after the session's NatNet/RTDE connections
+    are already closed - see the module docstring's threading rule for why nothing
+    like this may run near the hot loop.
+
+    Best-effort: a slow/unreachable robot SSH link just skips this with a warning,
+    it never blocks or discards the name/description the user already typed.
+
+    Returns the local basenames of any flight-report zips actually pulled (possibly
+    empty) - used by build_flight_report_manifest() to link each one back to the
+    catch_log fault event that (most likely) triggered it.
+    """
+    start_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_wall))
+    end_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_wall + 1))
+    os.makedirs(out_dir, exist_ok=True)
+    remote_cmd = (
+        f"awk -F' :: ' -v s='{start_str}' -v e='{end_str}' "
+        f"'$3>=s && $3<=e' /root/log_history.txt; "
+        f"echo '===SPLIT==='; "
+        f"awk -v s='{start_str}' -v e='{end_str}' "
+        f"'{{ts=$1\" \"$2}} ts>=s && ts<=e' /root/polyscope.log; "
+        f"echo '===SPLIT==='; "
+        f"find /root/flightreports -name '*.zip' -newermt '{start_str}'"
     )
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", ROBOT_SSH_HOST, remote_cmd],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            print(f"  (robot log pull failed: {result.stderr.strip()[:200]})")
+            return []
+        parts = result.stdout.split("===SPLIT===\n")
+        log_history_slice = parts[0] if len(parts) > 0 else ""
+        polyscope_slice = parts[1] if len(parts) > 1 else ""
+        new_reports = [l.strip() for l in parts[2].splitlines()] if len(parts) > 2 else []
+        with open(os.path.join(out_dir, "log_history_slice.txt"), "w") as f:
+            f.write(log_history_slice)
+        with open(os.path.join(out_dir, "polyscope_slice.txt"), "w") as f:
+            f.write(polyscope_slice)
+        pulled_basenames = []
+        for remote_path in new_reports:
+            if remote_path:
+                r = subprocess.run(
+                    ["scp", "-o", "ConnectTimeout=5", f"{ROBOT_SSH_HOST}:{remote_path}", out_dir],
+                    capture_output=True, timeout=60,
+                )
+                if r.returncode == 0:
+                    pulled_basenames.append(os.path.basename(remote_path))
+        print(f"  pulled robot logs -> {out_dir} "
+              f"({log_history_slice.count(chr(10))} log_history lines, "
+              f"{polyscope_slice.count(chr(10))} polyscope lines, "
+              f"{len(pulled_basenames)} flight report(s))")
+        return pulled_basenames
+    except Exception as e:
+        print(f"  (robot log pull skipped: {e})")
+        return []
+
+
+# UR flight-report zips are named recording<YYYYMMDD>_<HH>_<MM>_<SS>.zip, where the
+# embedded timestamp is the incident trigger time (verified against polyscope.log's
+# own "Flight reporter triggered" line - matches to the millisecond). See
+# build_flight_report_manifest().
+FLIGHT_REPORT_NAME_RE = re.compile(r"recording(\d{4})(\d{2})(\d{2})_(\d{2})_(\d{2})_(\d{2})\.zip")
+
+# Widened past the ~9s worst-case detection lag seen in one real session (see
+# LastNormal's docstring) - matching is "nearest fault event within this window",
+# not "must be near-instant", precisely because that lag is real and can vary.
+FLIGHT_REPORT_MATCH_TOLERANCE_S = 30.0
+
+
+def build_flight_report_manifest(out_dir: str, pulled_basenames: List[str], record_path: Optional[str]) -> None:
+    """Write robot_logs/sessions/<...>/flight_reports.json: for each flight-report
+    zip pulled into this session, its parsed trigger time and (if within
+    FLIGHT_REPORT_MATCH_TOLERANCE_S) the nearest catch_log "fault" event's
+    fault_count/detected_wall/max_undetected_s - so "which fault does this zip's
+    realtimedata.csv belong to" is answered by reading a few lines here, not by
+    eyeballing filenames against JSONL timestamps by hand (see docs/debug_log.md
+    2026-07-16, which had to do exactly that once).
+
+    Best-effort and silent-if-nothing-to-do: no report zips or no --record means an
+    empty/absent manifest, not an error.
+    """
+    if not pulled_basenames:
+        return
+    faults = []
+    if record_path and os.path.exists(record_path):
+        with open(record_path) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("ev") == "fault":
+                    faults.append(rec)
+
+    manifest = []
+    for basename in pulled_basenames:
+        m = FLIGHT_REPORT_NAME_RE.match(basename)
+        if not m:
+            manifest.append({"zip": basename, "trigger_wall": None, "matched_fault": None,
+                              "note": "filename didn't match the expected recording_YYYYMMDD_HH_MM_SS.zip pattern"})
+            continue
+        year, month, day, hh, mm, ss = m.groups()
+        trigger_struct = time.strptime(f"{year}-{month}-{day} {hh}:{mm}:{ss}", "%Y-%m-%d %H:%M:%S")
+        trigger_wall = time.mktime(trigger_struct)
+
+        best, best_gap = None, None
+        for flt in faults:
+            gap = abs(flt.get("detected_wall", flt["wall"]) - trigger_wall)
+            if best_gap is None or gap < best_gap:
+                best, best_gap = flt, gap
+        matched = None
+        if best is not None and best_gap <= FLIGHT_REPORT_MATCH_TOLERANCE_S:
+            matched = {"fault_count": best.get("fault_count"), "throw_at_detection": best.get("throw"),
+                       "detected_wall": best.get("detected_wall", best["wall"]),
+                       "last_known_normal_wall": best.get("last_known_normal_wall"),
+                       "gap_to_trigger_s": round(best_gap, 3)}
+        manifest.append({
+            "zip": basename,
+            "trigger_wall": trigger_wall,
+            "trigger_iso": time.strftime("%Y-%m-%d %H:%M:%S", trigger_struct),
+            "matched_fault": matched,
+        })
+
+    with open(os.path.join(out_dir, "flight_reports.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"  flight report manifest -> {out_dir}/flight_reports.json "
+          f"({sum(1 for m in manifest if m['matched_fault'])}/{len(manifest)} matched to a logged fault)")
+
+
+def wrap_up_session(session_start: float, session_end: float, throws: int,
+                     record_path: Optional[str], args) -> None:
+    """End-of-session bookkeeping: prompt for an optional name + a free-text
+    description of how the session went, then pull the robot's own logs for that
+    time window. Called once, after the NatNet/RTDE connections are torn down (see
+    main()) - deliberately outside the hot loop/try-finally so none of this (input()
+    prompts, an SSH round-trip) can add latency to the live trajectory/feasibility
+    calculation.
+    """
+    if args.no_wrapup:
+        return
+    print("\n" + "=" * 78)
+    try:
+        name = input("Session name (optional, Enter to skip): ").strip()
+    except EOFError:
+        name = ""
+    try:
+        description = input("Description - what happened, how did the session go? ").strip()
+    except EOFError:
+        description = ""
+    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(session_start))
+    out_dir = os.path.join(ROBOT_LOG_SESSIONS_DIR, f"{ts}_{name}" if name else ts)
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "notes.txt"), "w") as f:
+        f.write(f"name: {name or '(none)'}\n")
+        f.write(f"start: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session_start))}\n")
+        f.write(f"end: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session_end))}\n")
+        f.write(f"duration_s: {session_end - session_start:.1f}\n")
+        f.write(f"throws: {throws}\n")
+        f.write(f"dry_run: {args.dry_run}\n")
+        if record_path:
+            f.write(f"catch_log: {record_path}\n")
+        f.write(f"\ndescription:\n{description or '(none)'}\n")
+    print(f"session notes -> {out_dir}/notes.txt")
+    print("pulling robot logs for this session's time window...")
+    pulled_basenames = pull_robot_session_logs(session_start, session_end, out_dir)
+    build_flight_report_manifest(out_dir, pulled_basenames, record_path)
 
 
 def main():
@@ -317,8 +639,12 @@ def main():
     # Motion ----------------------------------------------------------------------
     parser.add_argument("--speed", type=float, default=1.5, help="m/s commanded for the CATCH movel (controller clamps; default 1.5)")
     parser.add_argument("--accel", type=float, default=6.0, help="m/s^2 for the catch movel (default 6.0)")
-    parser.add_argument("--approach-speed", type=float, default=0.4, help="m/s for the (slower) move to/return-to wait pose")
-    parser.add_argument("--approach-accel", type=float, default=1.0, help="m/s^2 for the approach/return moves")
+    parser.add_argument("--approach-speed", type=float, default=0.5,
+                        help="rad/s (joint-space - this move is a movej, not a movel, see move_to()) "
+                             "for the (slower) move to/return-to wait pose (default 0.5 rad/s ~ 29 deg/s, "
+                             "well under the 120 deg/s documented joint max)")
+    parser.add_argument("--approach-accel", type=float, default=1.0,
+                        help="rad/s^2 (joint-space) for the approach/return moves")
 
     # Commit / trust --------------------------------------------------------------
     parser.add_argument("--commit-samples", type=int, default=40,
@@ -337,13 +663,15 @@ def main():
                              "Use first to validate wait pose / plane / gating against your replay.")
     parser.add_argument("--record", action="store_true",
                         help="Record every feasibility tick, gate/commit/refuse decision, throw "
-                             "start/end, and robot move to a compact JSONL log file "
-                             "(catch_logs/catch_log_<timestamp>.jsonl, auto-named) for later "
-                             "analysis against a Motive replay of the same session - see CLAUDE.md "
-                             "'Run recording'.")
+                             "start/end, robot move, and the raw per-throw ball trajectory to a "
+                             "compact JSONL log file (catch_logs/catch_log_<timestamp>.jsonl, "
+                             "auto-named) for later analysis - no Motive replay needed, the raw "
+                             "trajectory is in the log itself - see CLAUDE.md 'Run recording'.")
     parser.add_argument("--yes", action="store_true", help="Skip the pre-motion confirmation prompt")
     parser.add_argument("--poll-hz", type=float, default=20.0, help="Feasibility-check/print rate during flight")
     parser.add_argument("--robot-ip", default=ROBOT_IP, help="UR12e controller IP")
+    parser.add_argument("--no-wrapup", action="store_true",
+                        help="Skip the end-of-session name/description prompt and robot log pull")
     args = parser.parse_args()
 
     record_path = None
@@ -364,6 +692,11 @@ def main():
 
     print(f"connecting to robot at {args.robot_ip} ...")
     rtde_r = rtde_receive.RTDEReceiveInterface(args.robot_ip)
+    rec.attach_rtde(rtde_r)  # every JSONL line from here on carries robot_clock too
+    dash = dashboard_client.DashboardClient(args.robot_ip)
+    dash.connect()
+    last_normal = LastNormal()  # see its docstring - bounds an undetected-fault window
+    fault_count = 0  # total faults waited-out this session - see wait_for_fault_clear
 
     # The R/t transform above was calibrated with the box/funnel-centroid TCP
     # active (see calibrate_frames.py), not the flange - every target this
@@ -380,6 +713,17 @@ def main():
     after = rtde_r.getActualTCPPose()
     print(f"set_tcp({tcp_offset}) sent. before={[round(v, 4) for v in before]} "
           f"after={[round(v, 4) for v in after]}")
+
+    # Payload/CoG is set once via the pendant's Installation -> Payload Estimation
+    # wizard instead of being sent by this script every run (2026-07-16, user
+    # decision - "it never changes"). Deliberately different from set_tcp() above:
+    # nothing else in this toolchain sets a different payload the way
+    # calibrate_frames.py sets a different tcp_offset during calibration, and the
+    # pendant's value is saved in the installation file (survives reboots), so
+    # there's no "prior script left the wrong value" hazard to guard against here.
+    # A wrong payload/CoG was the traced root cause of the 2026-07-16 base-joint
+    # protective stops (docs/debug_log.md) - if they recur, check the pendant
+    # value first before assuming this script's motion parameters are at fault.
 
     robot_mode = rtde_r.getRobotMode()
     frac = rtde_r.getTargetSpeedFraction()
@@ -413,7 +757,8 @@ def main():
     print(f"catch plane (mocap): {AXIS_NAMES[catch_axis_idx]} = {catch_value:.4f}")
     print(f"catch envelope: reach[{CATCH_MIN_REACH},{CATCH_MAX_REACH}]m  z[{CATCH_Z_MIN:+.2f},{CATCH_Z_MAX:+.2f}]m  "
           f"(no cap on distance from wait pose)")
-    print(f"catch movel: v={args.speed} m/s a={args.accel} m/s^2   |   approach: v={args.approach_speed} a={args.approach_accel}")
+    print(f"catch movel: v={args.speed} m/s a={args.accel} m/s^2   |   "
+          f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
     print(f"commit: n>={args.commit_samples} AND (feasible OR possibly-catch) - fires on the FIRST "
           f"qualifying tick; uses the last {args.stability_window}-prediction average (agreeing within "
           f"{args.drift_tol}m) as the target point when already available, else the raw current prediction")
@@ -439,24 +784,29 @@ def main():
 
     if not args.dry_run:
         initial_sweep = float(np.linalg.norm(np.array(current_pose[:3]) - wait_xyz))
-        print(f"\n*** THE ROBOT WILL MOVE. *** First it drives to the wait pose ({initial_sweep:.2f}m away, "
-              f"at {args.approach_speed} m/s), then")
+        current_q_deg = [math.degrees(q) for q in rtde_r.getActualQ()]
+        print(f"\n*** THE ROBOT WILL MOVE. *** First it drives to the wait pose ({initial_sweep:.2f}m TCP-straight-"
+              f"line distance away) via a bounded movej at {args.approach_speed} rad/s - joint target resolved "
+              f"robot-side (get_inverse_kin) from the arm's ACTUAL current joints "
+              f"{[f'{v:+.0f}' for v in current_q_deg]} deg, not assumed. Then")
         print("fires fast catch moves toward thrown balls. Clear the area and keep the E-stop in hand.")
         if not args.yes:
             if input("Type 'go' to arm motion (anything else aborts): ").strip().lower() != "go":
                 raise SystemExit("aborted.")
         print("\nmoving to wait pose...")
         t0 = time.time()
-        settled, fault = move_to(wait_pose, args.approach_speed, args.approach_accel, rtde_r)
+        settled, fault = move_to(wait_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
         rec.log("move", purpose="initial_wait_pose", target=wait_pose, speed=args.approach_speed,
                 accel=args.approach_accel, settled=settled, fault=fault, duration_s=time.time() - t0)
         if fault is not None:
-            halt_on_fault(rec, fault)
+            fault_count = wait_for_fault_clear(rec, fault, fault_count, rtde_r, dash, last_normal, wait_pose, args)
+            settled = True  # wait_for_fault_clear already drove to the wait pose once cleared
         if not settled:
             raise SystemExit("Did not reach the wait pose (timeout). Check the pendant / remote-control mode.")
-        print("at wait pose. Ready - throw the ball. Ctrl-C to stop.\n")
+        print("at wait pose. Ready - throw the ball. Press Enter (or Ctrl-C) to stop.\n")
     else:
-        print("\n[dry-run] not moving. Feasibility from the arm's CURRENT pose. Throw the ball. Ctrl-C to stop.\n")
+        print("\n[dry-run] not moving. Feasibility from the arm's CURRENT pose. Throw the ball. "
+              "Press Enter (or Ctrl-C) to stop.\n")
 
     # --- state ---
     s = SharedState()
@@ -482,10 +832,16 @@ def main():
             return None
         return mean
 
+    session_start_wall = time.time()
+    stop_reason = None
     with client:
         client.run_async()
         try:
             while True:
+                if enter_pressed():
+                    stop_reason = "user_enter"
+                    break
+
                 # Catches a fault from the fire-and-forget catch movel too (that path
                 # sends via raw send_script(), not move_to(), so it has no built-in
                 # settle/fault check of its own) - within one poll interval of it
@@ -493,9 +849,14 @@ def main():
                 # no motion is ever sent there, so an unrelated fault shouldn't
                 # interrupt a pure perception-testing session.
                 if not args.dry_run:
-                    fault = check_safety_mode(rtde_r)
+                    fault = check_safety_mode(rtde_r, dash, last_normal)
                     if fault is not None:
-                        halt_on_fault(rec, fault)
+                        fault_count = wait_for_fault_clear(rec, fault, fault_count, rtde_r, dash, last_normal, wait_pose, args)
+                        attempted = False
+                        refuse_logged = False
+                        pred_window.clear()
+                        last_state = "idle"
+                        continue
 
                 with STATE_LOCK:
                     target_id = s.target_id
@@ -590,15 +951,27 @@ def main():
                             samples=history_head.samples if history_head else None,
                             peak_speed=history_head.peak_speed if history_head else None,
                             attempted=attempted, arm_tcp_at_end=end_tcp)
+                    # The actual ground-truth ball trajectory for this throw, not just
+                    # its summary stats - a separate event (not folded into throw_end)
+                    # so a plain grep for throw_end stays small/scannable while this
+                    # bulkier line is opt-in to look at. This is what lets a session be
+                    # researched later from catch_logs/ alone, with no need to go back
+                    # into Motive replay - see FlightRecord.raw_samples' docstring for
+                    # why it has to be captured here (history_head) and not from
+                    # flight_buffer, which is already empty by this point.
+                    if history_head is not None and history_head.raw_samples:
+                        rec.log("throw_samples", t=history_head.raw_samples[0].t,
+                                raw=[[s.t, s.x, s.y, s.z] for s in history_head.raw_samples])
                     if attempted and not args.dry_run:
                         print("returning to wait pose...")
                         t0 = time.time()
-                        settled, fault = move_to(wait_pose, args.approach_speed, args.approach_accel, rtde_r)
+                        settled, fault = move_to(wait_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
                         rec.log("move", purpose="return_to_wait", target=wait_pose,
                                 speed=args.approach_speed, accel=args.approach_accel,
                                 settled=settled, fault=fault, duration_s=time.time() - t0)
                         if fault is not None:
-                            halt_on_fault(rec, fault)
+                            fault_count = wait_for_fault_clear(rec, fault, fault_count, rtde_r, dash, last_normal, wait_pose, args)
+                            settled = True  # wait_for_fault_clear already drove to the wait pose once cleared
                         if not settled:
                             print("WARNING: did not settle at wait pose within timeout (no fault reported) - "
                                   "check the arm before the next throw.")
@@ -609,17 +982,24 @@ def main():
                 last_state = state
                 time.sleep(1.0 / args.poll_hz)
         except KeyboardInterrupt:
-            print("\nCtrl-C - sending stopl.")
-            rec.log("run_end", reason="keyboard_interrupt")
+            stop_reason = "keyboard_interrupt"
+        finally:
+            print(f"\nstopping ({stop_reason or 'unknown'}) - sending stopl.")
+            rec.log("run_end", reason=stop_reason or "unknown")
             if not args.dry_run:
                 try:
                     send_script(stopl_script())
                 except Exception:
                     pass
-        finally:
             client.stop_async()
             rtde_r.disconnect()
+            dash.disconnect()
             rec.close()
+
+    # Deliberately outside the try/finally above and after the NatNet/RTDE
+    # connections are fully closed - see wrap_up_session()'s docstring and the
+    # module docstring's threading rule.
+    wrap_up_session(session_start_wall, time.time(), rec.throw, record_path, args)
 
 
 if __name__ == "__main__":

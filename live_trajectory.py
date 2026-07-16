@@ -84,6 +84,16 @@ class FlightRecord:
     peak_height_rise: float
     peak_speed: float
     residual_rms: float
+    # Raw (t,x,y,z) samples for the whole flight - the actual ground-truth ball
+    # trajectory, not just its summary stats. Populated once, here in
+    # finalize_flight(), specifically because reading it back out of
+    # SharedState.flight_buffer later is unreliable: that buffer is already reset to
+    # [] (by this same function) by the time any poll-loop consumer (catch.py etc.)
+    # notices the state=="idle" transition, so this is the only point in time it's
+    # actually available. Exists so a session's real trajectory data can be
+    # recovered later without ever needing Motive replay again - see catch.py's
+    # throw_samples recording.
+    raw_samples: List[Sample] = field(default_factory=list)
 
 
 @dataclass
@@ -137,6 +147,7 @@ def finalize_flight(s: SharedState, reason: str, floor_refractory: float = 0.0) 
                 peak_height_rise=peak_rise,
                 peak_speed=s.flight_max_speed,
                 residual_rms=fit.residual_rms,
+                raw_samples=list(buf),
             )
         )
     s.state = "idle"

@@ -69,6 +69,31 @@ prog()
 """
 
 
+def movej_to_pose_script(pose, qnear, speed, accel):
+    """movej to a Cartesian pose, resolved to joints ON THE ROBOT via get_inverse_kin(
+    pose, qnear=...) with qnear = the arm's actual current joints (read via rtde_receive
+    in Python, passed down as a plain literal - never computed as a URScript expression,
+    per the existing "resolve values in Python" rule). qnear makes the IK solver pick the
+    solution nearest the arm's real starting configuration, and movej's bounded
+    accelerate-cruise-decelerate joint profile (see spin_base.py's v2 fix) replaces
+    movel's straight-line Cartesian interpolation - which forces an unpredictable, and
+    potentially very large/fast, joint sweep (worst case: the base joint) whenever the
+    arm's actual current configuration is far from what a straight Cartesian line to the
+    target would assume. Real 2026-07-16 incident: the arm was left ~180deg off (base
+    joint) from a prior session, catch.py's movel-based approach to the wait pose tried
+    to hold a straight Cartesian line through that mismatch, and the resulting base-joint
+    sweep tripped a protective stop.
+    """
+    pose_str = "p[" + ",".join(f"{v:.6f}" for v in pose) + "]"
+    qnear_str = "[" + ",".join(f"{v:.6f}" for v in qnear) + "]"
+    return f"""def prog():
+  q_target = get_inverse_kin({pose_str}, qnear={qnear_str})
+  movej(q_target, a={accel}, v={speed})
+end
+prog()
+"""
+
+
 def check_move_size(current, target, is_joint, force):
     deltas = [t - c for t, c in zip(target, current)]
     if is_joint:
