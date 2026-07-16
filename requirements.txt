@@ -1,0 +1,5 @@
+natnet==0.2.0
+rich
+numpy
+matplotlib
+ur_rtde==1.6.3

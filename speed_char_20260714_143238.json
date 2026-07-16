@@ -1,0 +1,430 @@
+{
+  "created": "2026-07-14T14:32:38.682934",
+  "robot_ip": "192.168.20.1",
+  "pose_a": [
+    -0.4799,
+    -0.0621,
+    0.554,
+    1.5716,
+    -0.6653,
+    -0.7089
+  ],
+  "pose_b": [
+    -1.0796,
+    0.6455,
+    0.2816,
+    1.4842,
+    -0.7987,
+    -0.5374
+  ],
+  "segment_len": 0.966715888976694,
+  "distances": [
+    0.1,
+    0.3166789722441735,
+    0.5333579444883471,
+    0.7500369167325205,
+    0.966715888976694
+  ],
+  "accel": 40.0,
+  "v_start": 0.2,
+  "v_step": 0.2,
+  "v_max": 1.6,
+  "speed_fraction": 1.0,
+  "envelope": [
+    [
+      0.2,
+      0.2030647266923601
+    ],
+    [
+      0.4,
+      0.4043134993316692
+    ],
+    [
+      0.6000000000000001,
+      0.6053363923798565
+    ],
+    [
+      0.8,
+      0.8059572413428813
+    ],
+    [
+      1.0,
+      1.0052829361953741
+    ],
+    [
+      1.2,
+      1.2018559862663882
+    ],
+    [
+      1.4,
+      1.3240844977739183
+    ],
+    [
+      1.5999999999999999,
+      1.3239802235230211
+    ]
+  ],
+  "legs": [
+    {
+      "v_cmd": 0.2,
+      "distance": 0.1,
+      "peak": 0.20280455608218229,
+      "move_time": 0.6284461869981897,
+      "flight_time": 0.6072788469973602,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.2,
+      "distance": 0.3166789722441735,
+      "peak": 0.202909343661477,
+      "move_time": 1.690677347000019,
+      "flight_time": 1.6689299879981263,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.2,
+      "distance": 0.5333579444883471,
+      "peak": 0.202627762313489,
+      "move_time": 2.784526443003415,
+      "flight_time": 2.761553738000657,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.2,
+      "distance": 0.7500369167325205,
+      "peak": 0.20304277739013998,
+      "move_time": 3.920026327999949,
+      "flight_time": 3.8992172610014677,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.2,
+      "distance": 0.966715888976694,
+      "peak": 0.2030647266923601,
+      "move_time": 5.084600625003077,
+      "flight_time": 5.061301917001401,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.4,
+      "distance": 0.1,
+      "peak": 0.4041840914947759,
+      "move_time": 0.41248723700118717,
+      "flight_time": 0.390817331001017,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.4,
+      "distance": 0.3166789722441735,
+      "peak": 0.4037977947896963,
+      "move_time": 0.9314677919974201,
+      "flight_time": 0.9096690410005976,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.4,
+      "distance": 0.5333579444883471,
+      "peak": 0.4043134993316692,
+      "move_time": 1.4944440340004803,
+      "flight_time": 1.4728412320000643,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.4,
+      "distance": 0.7500369167325205,
+      "peak": 0.40430334259155354,
+      "move_time": 2.139462095001363,
+      "flight_time": 2.1186290830009966,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.4,
+      "distance": 0.966715888976694,
+      "peak": 0.4042544083871194,
+      "move_time": 2.695800994999445,
+      "flight_time": 2.672004248997837,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.6000000000000001,
+      "distance": 0.1,
+      "peak": 0.5992211619732484,
+      "move_time": 0.34817213799760793,
+      "flight_time": 0.3264076909981668,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.6000000000000001,
+      "distance": 0.3166789722441735,
+      "peak": 0.6048204877790463,
+      "move_time": 0.6880596250011877,
+      "flight_time": 0.6662279240008502,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.6000000000000001,
+      "distance": 0.5333579444883471,
+      "peak": 0.6048780181556797,
+      "move_time": 1.04601629699755,
+      "flight_time": 1.024302126999828,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.6000000000000001,
+      "distance": 0.7500369167325205,
+      "peak": 0.6045881223320606,
+      "move_time": 1.5340162739994412,
+      "flight_time": 1.5123873359989375,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.6000000000000001,
+      "distance": 0.966715888976694,
+      "peak": 0.6053363923798565,
+      "move_time": 1.9071673840007861,
+      "flight_time": 1.8854093900008593,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.8,
+      "distance": 0.1,
+      "peak": 0.6933802138582538,
+      "move_time": 0.3335349339977256,
+      "flight_time": 0.3126628559984965,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.8,
+      "distance": 0.3166789722441735,
+      "peak": 0.8048522603183258,
+      "move_time": 0.672266628997022,
+      "flight_time": 0.651285817999451,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.8,
+      "distance": 0.5333579444883471,
+      "peak": 0.8056556662797612,
+      "move_time": 0.9532914929986873,
+      "flight_time": 0.931519098001445,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.8,
+      "distance": 0.7500369167325205,
+      "peak": 0.8059572413428813,
+      "move_time": 1.2388924900005804,
+      "flight_time": 1.2178153460008616,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 0.8,
+      "distance": 0.966715888976694,
+      "peak": 0.805820759525263,
+      "move_time": 1.526156521998928,
+      "flight_time": 1.5051007699985348,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.0,
+      "distance": 0.1,
+      "peak": 0.6912261167734197,
+      "move_time": 0.35506032099874574,
+      "flight_time": 0.3332717449993652,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.0,
+      "distance": 0.3166789722441735,
+      "peak": 0.9720754800872803,
+      "move_time": 0.5526014140014013,
+      "flight_time": 0.5292369880007755,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.0,
+      "distance": 0.5333579444883471,
+      "peak": 1.0048481959634645,
+      "move_time": 0.8541903460027243,
+      "flight_time": 0.8325663020004868,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.0,
+      "distance": 0.7500369167325205,
+      "peak": 1.004947807988986,
+      "move_time": 1.0809643040010997,
+      "flight_time": 1.0582018879977113,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.0,
+      "distance": 0.966715888976694,
+      "peak": 1.0052829361953741,
+      "move_time": 1.3015920910002023,
+      "flight_time": 1.2798162040016905,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.2,
+      "distance": 0.1,
+      "peak": 0.6902845148563672,
+      "move_time": 0.35582952500044485,
+      "flight_time": 0.3350868420020561,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.2,
+      "distance": 0.3166789722441735,
+      "peak": 0.9732623400911389,
+      "move_time": 0.6391550869993807,
+      "flight_time": 0.6184912739990978,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.2,
+      "distance": 0.5333579444883471,
+      "peak": 1.1839058527717623,
+      "move_time": 0.8311366950001684,
+      "flight_time": 0.8073262030011392,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.2,
+      "distance": 0.7500369167325205,
+      "peak": 1.2015405264122354,
+      "move_time": 1.0170786640010192,
+      "flight_time": 0.9952937249981915,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.2,
+      "distance": 0.966715888976694,
+      "peak": 1.2018559862663882,
+      "move_time": 1.2173669429976144,
+      "flight_time": 1.1956409550002718,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.4,
+      "distance": 0.1,
+      "peak": 0.6917509393657182,
+      "move_time": 0.3348516469995957,
+      "flight_time": 0.31317510399821913,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.4,
+      "distance": 0.3166789722441735,
+      "peak": 0.9737802370026759,
+      "move_time": 0.6468616669990297,
+      "flight_time": 0.6252997660012625,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.4,
+      "distance": 0.5333579444883471,
+      "peak": 1.195833931346171,
+      "move_time": 0.8328783200013277,
+      "flight_time": 0.8118718110017653,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.4,
+      "distance": 0.7500369167325205,
+      "peak": 1.3240844977739183,
+      "move_time": 1.0050018149995594,
+      "flight_time": 0.9832856920002087,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.4,
+      "distance": 0.966715888976694,
+      "peak": 1.2044823582910387,
+      "move_time": 1.2145031100008055,
+      "flight_time": 1.1927632609986176,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.5999999999999999,
+      "distance": 0.1,
+      "peak": 0.6919570636028707,
+      "move_time": 0.3341389680026623,
+      "flight_time": 0.31253300800017314,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.5999999999999999,
+      "distance": 0.3166789722441735,
+      "peak": 0.9744128476790224,
+      "move_time": 0.6454645960002381,
+      "flight_time": 0.6236826370004565,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.5999999999999999,
+      "distance": 0.5333579444883471,
+      "peak": 1.19542933511297,
+      "move_time": 0.8316872119976324,
+      "flight_time": 0.8100675149980816,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.5999999999999999,
+      "distance": 0.7500369167325205,
+      "peak": 1.3239802235230211,
+      "move_time": 1.006765350997739,
+      "flight_time": 0.98511611199865,
+      "started": true,
+      "settled": true
+    },
+    {
+      "v_cmd": 1.5999999999999999,
+      "distance": 0.966715888976694,
+      "peak": 1.2052761036635984,
+      "move_time": 1.215887231999659,
+      "flight_time": 1.1948914799977501,
+      "started": true,
+      "settled": true
+    }
+  ],
+  "interrupted": false
+}
