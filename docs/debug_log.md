@@ -898,3 +898,141 @@ robot - start with `--dry-run`, then a deliberate bench test before trusting liv
 3. Not changed: `--accel` (still defaults to 6.0 m/s², already user-configurable) -
    recommend testing at a lower value once the payload/CoG fix is in place, since
    that may turn out to be sufficient on its own.
+
+## 2026-07-17 (night shift) — quantitative analysis of all 23 real 2026-07-16
+## catch sessions (196 throws), root cause of the remaining protective stops,
+## and a batch of offline-validated catch.py changes
+
+Analysis scripts lived in the session scratchpad (not committed); every number
+below is reproducible from `catch_logs/catch_log_20260716_*.jsonl` alone.
+
+**Dataset**: 23 non-dry-run sessions, 196 throws, 108 commits (55%), 33 fault
+events. Ball peak speeds 2.8–9.5 m/s (median 5.3), flight durations median 1.05s.
+Commits fired at median n=43 samples (min 40 = `--commit-samples`), median
+time-to-impact 0.63s, median move distance 0.31m. 78/108 commits were "possible"
+(box-forgiveness) vs 30 full "catch". The `--stability-window` average was used as
+the commit target **0 of 108 times** — commits fire on the first eligible tick,
+when `pred_window` necessarily has 1 entry, so that code path was dead in practice
+(it now matters again for the post-commit re-aim, see below).
+
+**Estimated catch rate: ~91% of committed throws** (67/74 classifiable). A caught
+ball is *occluded by the box* — its throw ends "lost tracking" with the ball last
+seen <30cm from the tool; missed balls were last seen 1.5m+ away. This
+last-seen-near-tool heuristic matched the session notes well and is now printed
+live per throw (see changes).
+
+**Remaining protective stops are geometric, not payload.** After the 14:34
+payload fix, fault rate vs the commit target's azimuth swing from the wait pose
+(accel<=4 sessions): 0% under 10°, 17% at 10–20°, 36% at 20–35°, 50% above 35°.
+(Pre-fix accel=6 sessions: 3%/27%/62%/67%.) Mechanism: a movel holds a straight
+Cartesian line at commanded TCP speed; at reach r that demands base-joint speed
+~v/r — at the observed faulting commits (r=0.44–0.79m, v=1.1–1.5 m/s) that is
+137–195°/s, over the 120°/s base joint limit → C153A0 "position deviates from
+path". This is why lowering `--accel` helped but never fixed side throws: it's a
+*velocity* violation on a *path*, not an acceleration problem. A movej cannot
+violate joint limits by construction (the controller plans in joint space), so
+`--catch-move movej` (+ `--yaw-follow`, below) is the fix to test on the arm.
+
+**Prediction accuracy vs sample count** (replayed from `throw_samples` against
+each trajectory's actual recorded plane crossing, 76 throws): free-quadratic fit
+median/p90 error = 10.4/23.5cm at n=30, 6.4/16.9 at n=40, 2.7/4.7 at n=67,
+1.6/2.8 at n=80. Confirms CLAUDE.md's "~67 samples for <5cm" number on real data.
+Tested alternatives — **both worse, do not "improve" the fit this way**:
+gravity-locked to -9.81 on mocap Y (5.1/9.7cm at n=67) and locked to the
+empirical median -9.73 (6.0/10.9 at n=67). The free fit absorbs drag, calibration
+tilt and marker-centroid wobble into its fitted accel; constraining it to physics
+adds bias that outweighs the variance saved, already by n≈40. (Full-flight fitted
+Y-accel across 147 flights: median -9.73, std 4.46 — the spread is why.)
+
+**Re-aim opportunity**: between the commit (n≈43) and n=80 the predicted catch
+point moves median 4.4cm / p90 10.7cm — real error that vanishes if re-aimed. At
+n=67 there is still median 0.42s (p10 0.33s) to impact; the arm is usually
+already at/near the committed point (arriving early is the design), so the
+correction is a short move from rest. This is the data behind the new re-aim
+behavior (fires only from rest, never preempts).
+
+**False-release hazard quantified**: real throws release >=1.1m (horizontal, p5;
+median 2.16m) from the base moving toward it (angle p90 = 27°). The 8 recorded
+events under 1.0m / >100° away were all a hand handling the ball near the robot —
+the same class as the 15:13 self-collision (session 151342 throw 9: ball grabbed
+out of the box was detected as a throw, committed the arm to a target 158° behind
+the wait azimuth, elbow self-collided). That throw's own trajectory was never
+recorded because the fault path skipped throw_end/throw_samples logging — also
+fixed.
+
+**catch.py changes (offline-validated; NOT yet run against the real arm)**:
+1. **Release guard** (`check_release_guard`, default on): release must originate
+   >=1.0m (horizontal) from the base (`--min-release-dist`) and not be moving
+   >100° away from it (`--max-away-deg`). Replayed over all 161 recorded throws:
+   blocks exactly the 8 hand/away events, passes everything else. Guarded throws
+   log a `guard` event and never commit.
+2. **Azimuth band in `check_catch_envelope`** (`CATCH_MAX_AZIMUTH_DEG=75°` from
+   the wait-pose azimuth, on for every commit/re-aim when `wait_xyz` is passed):
+   backstop for targets behind/beside the demo corridor — the 151342 target
+   (125° swing) is refused by unit test; all real committed targets (max 44°) pass.
+3. **Post-commit re-aim** (default on, `--no-reaim`): after the committed move
+   settles (TCP speed <0.01, never preempting motion) the loop keeps refitting;
+   if the refined prediction drifts >=`--reaim-min` (2cm) off the committed
+   target, the correction still fits the time budget, and the new target passes
+   the envelope, it sends a short correction move (same primitive as the commit,
+   max `--reaim-max-count` 3/throw, logged as `reaim` events).
+4. **`--catch-move movej` + `--catch-joint-speed/--catch-joint-accel`** (default
+   still movel): catch move via `movej_to_pose_script` (IK robot-side, qnear =
+   actual joints) — the anti-C153A0 option for side throws. **`--yaw-follow`**:
+   rotates the target orientation about base Z by the target's azimuth delta so
+   the mouth-up box pans with the base instead of the wrist fighting to hold a
+   fixed world orientation (quaternion composition, unit-tested to 1e-15 against
+   rotation matrices). Both default OFF until tested on the arm.
+5. **`--poll-hz` 20 → 50** (each poll interval is pure decision latency before
+   the commit; 20Hz cost 25ms mean / 50ms worst ≈ 3–6cm of arm travel). Console
+   prints throttled to ~12/s so the terminal stays readable; ticks recorded
+   regardless.
+6. **Live catch/miss tally**: throw_end now logs/prints `caught_guess` +
+   `ball_last_dist_m` (last-seen-near-tool heuristic, <30cm) and a running
+   session score; totals go in run_end and the wrap-up notes.txt.
+7. **Faulted throws now get their `throw_end`/`throw_samples` logged** (captured
+   post-fault-clear, deduped via the FlightRecord identity) — previously the one
+   class of throw with no trajectory in the log was exactly the one that faulted.
+
+Re-aim replay caveat: only 6 committed throws had an observable "true" crossing
+to score against (caught balls occlude before crossing the plane), so the direct
+replay (3 improved / 2 worsened) is weak evidence either way; the strong evidence
+is the 76-throw accuracy-vs-n table above (error strictly shrinks with n, med
+6.4cm→1.6cm from commit-time to n=80).
+
+## 2026-07-17 (later) — night-shift changes promoted to defaults; open question on movej accuracy
+
+Ran a first real session with the whole night-shift batch (release guard,
+azimuth band, re-aim, `--catch-move movej`, `--yaw-follow`, `--poll-hz 50`) live
+on the arm: `python3 catch.py --record --accel 4.0 --speed 1.2 --rigid-body-id 3
+--catch-move movej --yaw-follow --wait-pose 0.042 -0.716 0.139 1.584 -0.0824
+-0.0573 --approach-speed 1.5`. No new faults observed, so all of it — plus that
+exact operating point — is now the script's default (see CLAUDE.md "Catch
+Integration" and "Status"): `--catch-move movej`, `--yaw-follow` default on
+(`movel`/`--no-yaw-follow` still available as escape hatches), `--accel 4.0`,
+`--speed 1.2`, `--approach-speed 1.5`, wait pose `(0.042, -0.716, 0.139, 1.584,
+-0.0824, -0.0573)`, `--rigid-body-id` defaulting to `3`.
+
+**Open question, not yet root-caused**: operator impression from this session
+that catch accuracy was a bit worse than under the old `movel` default. Nothing
+quantified yet — no side-by-side A/B on matched throws, just a feel during the
+session. Candidate causes worth checking before trusting movej for a tighter
+tool than the current funnel:
+- `catch_move_script`'s movej path resolves IK via `get_inverse_kin
+  qnear=current joints` robot-side — if the returned elbow/wrist configuration
+  isn't quite the one assumed elsewhere (e.g. `yaw_follow_orientation`'s
+  rotation math, or the re-aim correction move recomputing IK from a different
+  `qnear` after the arm has moved), the final TCP pose could differ slightly
+  from the intended Cartesian target even though the *commanded* pose is
+  identical to what movel would have received.
+- Re-aim (`reaim` correction sends) still uses whatever `catch_move_script`
+  resolves at correction time — worth checking whether a movej correction from
+  a different qnear than the original commit converges to the same pose or
+  drifts.
+- Could also just be movej's cruise/blend profile reaching the target pose with
+  a different final-approach velocity than movel, interacting with however "hit
+  the target" was being judged (JSONL commit vs re-aim pose diff, not yet
+  compared to actual TCP-at-catch from `throw_end`).
+Next step: replay/compare `throw_end`'s actual TCP pose vs the committed
+target pose across this session's JSONL, movej throws vs a matched movel
+baseline, before concluding there's a real effect.

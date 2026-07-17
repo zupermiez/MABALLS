@@ -121,7 +121,9 @@ CATCH_Z_MAX = 0.55       # m base-frame - above this heads toward the overhead s
 # reach, no move-distance cap, lower margin - see docs/debug_log.md). This pose has
 # wrist2 = +85.5 deg, near the best-conditioned point away from both singular values
 # (0 deg and 180 deg) - confirmed via ur_get_pose.py joint readout before saving.
-DEFAULT_WAIT_POSE = (0.1139, -0.4686, 0.1335, 1.5840, -0.0824, -0.0573)
+# Re-taught again 2026-07-17 night shift (same orientation, adjusted x/y) as the new
+# operating-point pose used alongside --catch-move movej/--yaw-follow.
+DEFAULT_WAIT_POSE = (0.042, -0.716, 0.139, 1.584, -0.0824, -0.0573)
 
 # --record output goes here, not cwd - keeps the repo root from filling up with one
 # file per session the way speed_char_*.json/png already do.
@@ -238,12 +240,128 @@ def stopl_script(decel: float = 3.0) -> str:
     return f"def prog():\n  stopl({decel})\nend\nprog()\n"
 
 
-def check_catch_envelope(target_xyz: np.ndarray) -> Optional[str]:
+# --- Small quaternion helpers for --yaw-follow (rotate the wait orientation about
+# base Z by the target's azimuth delta). Quaternion-based on purpose: direct
+# axis-angle composition via rotation matrices needs the fragile theta~pi
+# edge case handled; quaternions don't. Only used to compose one yaw with one
+# fixed orientation, so no need for scipy. ---
+
+def _rotvec_to_quat(rv):
+    rv = np.asarray(rv, dtype=float)
+    theta = float(np.linalg.norm(rv))
+    if theta < 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    axis = rv / theta
+    return np.concatenate([[math.cos(theta / 2)], axis * math.sin(theta / 2)])
+
+
+def _quat_multiply(q1, q2):
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+
+
+def _quat_to_rotvec(q):
+    w, v = q[0], np.asarray(q[1:], dtype=float)
+    n = float(np.linalg.norm(v))
+    if n < 1e-12:
+        return np.zeros(3)
+    theta = 2.0 * math.atan2(n, w)
+    if theta > math.pi:
+        theta -= 2.0 * math.pi
+    return (v / n) * theta
+
+
+def yaw_follow_orientation(wait_pose: List[float], wait_xyz: np.ndarray,
+                           target_xyz: np.ndarray) -> List[float]:
+    """Rotate the wait pose's orientation about base Z by the azimuth delta from
+    the wait position to the catch target, so the (rotationally symmetric,
+    mouth-up) catch tool pans WITH the base instead of the wrist fighting to hold
+    a fixed world orientation through the sweep. For an upward-facing box/funnel,
+    yaw about vertical is a free variable - using it keeps the wrist configuration
+    constant relative to the arm's own plane, which is exactly the well-conditioned
+    thing. Motivation is the 2026-07-16 fault data: fault rate rose monotonically
+    with target azimuth swing (3% under 10deg, 62% at 20-35deg) - see
+    docs/debug_log.md 2026-07-17.
+    """
+    az_wait = math.atan2(float(wait_xyz[1]), float(wait_xyz[0]))
+    az_tgt = math.atan2(float(target_xyz[1]), float(target_xyz[0]))
+    d_az = math.atan2(math.sin(az_tgt - az_wait), math.cos(az_tgt - az_wait))
+    q_yaw = np.array([math.cos(d_az / 2), 0.0, 0.0, math.sin(d_az / 2)])
+    q_wait = _rotvec_to_quat(wait_pose[3:6])
+    rv = _quat_to_rotvec(_quat_multiply(q_yaw, q_wait))
+    return [float(rv[0]), float(rv[1]), float(rv[2])]
+
+
+def check_release_guard(flight_buffer: List, R: np.ndarray, t_vec: np.ndarray,
+                        min_release_dist: float, max_away_deg: float = 100.0,
+                        min_horiz_speed: float = 1.0) -> Optional[str]:
+    """None if this throw's release looks like a real throw AT the robot, else a
+    reason string - evaluated once per throw, right at release detection, before
+    any feasibility tick may commit.
+
+    Two independent checks, both designed against the 161 recorded real throws of
+    2026-07-16 (docs/debug_log.md 2026-07-17):
+    - Release origin distance: every real throw released >=1.1m (horizontal) from
+      the base (p5=1.14m, median 2.16m); the events under 1.0m were all a hand
+      handling the ball near the robot - including the one that made the arm
+      commit to a 125deg-azimuth target and self-collide (session 151342 throw 9,
+      "grabbed the ball out of the box"). A person simply cannot be throwing from
+      inside the arm's own workspace.
+    - Direction: a throw with real horizontal speed (> min_horiz_speed) whose
+      velocity points >max_away_deg away from the base direction is moving AWAY
+      from the robot - never catchable, but its fit can still produce a
+      plane-crossing behind/beside the robot and commit the arm toward it. Real
+      throws' p90 was 27deg; 100deg keeps every plausibly-at-the-robot throw.
+    """
+    n = min(len(flight_buffer), 10)
+    if n < 3:
+        return None  # not enough to judge - the commit gate needs 40+ samples anyway
+    p0 = mocap_point_to_base(np.array([flight_buffer[0].x, flight_buffer[0].y, flight_buffer[0].z]), R, t_vec)
+    p1 = mocap_point_to_base(np.array([flight_buffer[n - 1].x, flight_buffer[n - 1].y, flight_buffer[n - 1].z]), R, t_vec)
+    dist0 = float(np.linalg.norm(p0[:2]))
+    if dist0 < min_release_dist:
+        return (f"release only {dist0:.2f}m (horizontal) from the robot base "
+                f"(< {min_release_dist:.2f}m) - a hand/handled ball, not a throw")
+    dt = flight_buffer[n - 1].t - flight_buffer[0].t
+    if dt <= 0:
+        return None
+    vh = (p1[:2] - p0[:2]) / dt
+    vh_n = float(np.linalg.norm(vh))
+    if vh_n >= min_horiz_speed:
+        to_base = -p0[:2] / (dist0 + 1e-9)
+        cos = float(np.dot(vh, to_base)) / (vh_n + 1e-9)
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+        if ang > max_away_deg:
+            return (f"ball moving {ang:.0f}deg away from the robot at {vh_n:.1f}m/s "
+                    f"(> {max_away_deg:.0f}deg) - not a throw at the arm")
+    return None
+
+
+# Max azimuth deviation of a catch target from the wait pose's azimuth. The
+# envelope's reach/z bands are rotationally symmetric, so without this a target
+# BEHIND the robot passes them - a real 2026-07-16 incident (session 151342 throw 9,
+# a hand grabbing the ball out of the box being detected as a "throw") committed the
+# arm to azimuth ~158deg away from the wait pose and it self-collided at the elbow.
+# Real committed throws all fell within 44deg of the wait azimuth. The release guard
+# (check_release_guard) should catch the false-release upstream; this is the
+# belt-and-suspenders backstop at the single reviewed motion gate.
+CATCH_MAX_AZIMUTH_DEG = 75.0
+
+
+def check_catch_envelope(target_xyz: np.ndarray, wait_xyz: Optional[np.ndarray] = None,
+                         max_azimuth_deg: float = CATCH_MAX_AZIMUTH_DEG) -> Optional[str]:
     """Return None if `target_xyz` (base frame) is a safe catch target, else a reason string.
 
     This is the single reviewed 'clamp-off' path CLAUDE.md requires for catch moves -
     every commanded target passes through here immediately before any motion is sent,
     regardless of what produced it, so a bad fit or a code bug can't fling the arm.
+    Pass `wait_xyz` to also enforce the azimuth band (see CATCH_MAX_AZIMUTH_DEG).
     """
     reach = float(np.linalg.norm(target_xyz))
     if not (CATCH_MIN_REACH <= reach <= CATCH_MAX_REACH):
@@ -251,6 +369,13 @@ def check_catch_envelope(target_xyz: np.ndarray) -> Optional[str]:
     z = float(target_xyz[2])
     if not (CATCH_Z_MIN <= z <= CATCH_Z_MAX):
         return f"height z={z:+.2f}m outside catch band [{CATCH_Z_MIN:+.2f},{CATCH_Z_MAX:+.2f}]m (deck/singularity guard)"
+    if wait_xyz is not None:
+        az_wait = math.atan2(float(wait_xyz[1]), float(wait_xyz[0]))
+        az_tgt = math.atan2(float(target_xyz[1]), float(target_xyz[0]))
+        d_az = math.degrees(abs(math.atan2(math.sin(az_tgt - az_wait), math.cos(az_tgt - az_wait))))
+        if d_az > max_azimuth_deg:
+            return (f"target azimuth {d_az:.0f}deg from the wait pose (> {max_azimuth_deg:.0f}deg) - "
+                    f"behind/beside the demo corridor, refusing")
     return None
 
 
@@ -565,7 +690,8 @@ def build_flight_report_manifest(out_dir: str, pulled_basenames: List[str], reco
 
 
 def wrap_up_session(session_start: float, session_end: float, throws: int,
-                     record_path: Optional[str], args) -> None:
+                     record_path: Optional[str], args,
+                     catches: int = 0, attempts_ended: int = 0) -> None:
     """End-of-session bookkeeping: prompt for an optional name + a free-text
     description of how the session went, then pull the robot's own logs for that
     time window. Called once, after the NatNet/RTDE connections are torn down (see
@@ -593,6 +719,7 @@ def wrap_up_session(session_start: float, session_end: float, throws: int,
         f.write(f"end: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session_end))}\n")
         f.write(f"duration_s: {session_end - session_start:.1f}\n")
         f.write(f"throws: {throws}\n")
+        f.write(f"caught: {catches}/{attempts_ended} attempted (heuristic: ball last seen <30cm from tool)\n")
         f.write(f"dry_run: {args.dry_run}\n")
         if record_path:
             f.write(f"catch_log: {record_path}\n")
@@ -608,7 +735,9 @@ def main():
     parser.add_argument("--server-ip", default="192.168.10.1", help="Motive host IP")
     parser.add_argument("--local-ip", default="192.168.10.2", help="This machine's IP")
     parser.add_argument("--unicast", action="store_true", help="Use unicast instead of multicast")
-    parser.add_argument("--rigid-body-id", type=int, default=None, help="NatNet rigid body id of the ball")
+    parser.add_argument("--rigid-body-id", type=int, default=3,
+                        help="NatNet rigid body id of the ball (default 3, the standard rig with base+tool "
+                             "RBs also in the scene - auto-select only works with a single tracked body present)")
 
     add_release_detection_args(parser)
 
@@ -637,14 +766,64 @@ def main():
                              "than the dry-run tool since we also attempt POSSIBLY-catch)")
 
     # Motion ----------------------------------------------------------------------
-    parser.add_argument("--speed", type=float, default=1.5, help="m/s commanded for the CATCH movel (controller clamps; default 1.5)")
-    parser.add_argument("--accel", type=float, default=6.0, help="m/s^2 for the catch movel (default 6.0)")
-    parser.add_argument("--approach-speed", type=float, default=0.5,
+    parser.add_argument("--speed", type=float, default=1.2, help="m/s commanded for the CATCH movel (controller clamps; default 1.2, the 2026-07-17 operating point)")
+    parser.add_argument("--accel", type=float, default=4.0, help="m/s^2 for the catch movel (default 4.0, the 2026-07-17 operating point)")
+    parser.add_argument("--catch-move", choices=("movel", "movej"), default="movej",
+                        help="Motion primitive for the catch move. movej (default since 2026-07-17) moves in "
+                             "joint space (IK resolved robot-side via get_inverse_kin qnear=current joints, "
+                             "same proven path as the wait-pose approach) - it CANNOT violate joint limits by "
+                             "construction, fixing the side-throw protective stops movel was causing. movel "
+                             "holds a straight Cartesian line - but to a side target that forces base-joint "
+                             "speed = TCP speed / reach, which exceeds the 120deg/s base limit whenever the "
+                             "azimuth swing is large (the 2026-07-16 fault data: 3%% faults <10deg swing, 62%% "
+                             "at 20-35deg). Uses --catch-joint-speed/--catch-joint-accel, not --speed/--accel. "
+                             "NOTE (2026-07-17): suspected accuracy regression vs movel, not yet root-caused -"
+                             " see docs/debug_log.md 'movej accuracy' open question.")
+    parser.add_argument("--catch-joint-speed", type=float, default=2.0,
+                        help="rad/s leading-joint speed for --catch-move movej (default 2.0 ~ 115deg/s, "
+                             "just under the 120deg/s base/shoulder limit)")
+    parser.add_argument("--catch-joint-accel", type=float, default=5.0,
+                        help="rad/s^2 for --catch-move movej (default 5.0 - conservative, characterize upward)")
+    parser.add_argument("--no-yaw-follow", action="store_true",
+                        help="Disable yaw-follow (on by default since 2026-07-17). Yaw-follow rotates the "
+                             "catch-target orientation about base Z by the target's azimuth delta from the "
+                             "wait pose, so the (rotationally symmetric, mouth-up) tool pans with the base "
+                             "instead of the wrist fighting to hold a fixed world orientation through a side "
+                             "sweep. Paired with --catch-move movej.")
+    parser.add_argument("--approach-speed", type=float, default=1.5,
                         help="rad/s (joint-space - this move is a movej, not a movel, see move_to()) "
-                             "for the (slower) move to/return-to wait pose (default 0.5 rad/s ~ 29 deg/s, "
-                             "well under the 120 deg/s documented joint max)")
+                             "for the move to/return-to wait pose (default 1.5, the 2026-07-17 operating "
+                             "point - well under the 120 deg/s ~ 2.09 rad/s documented joint max)")
     parser.add_argument("--approach-accel", type=float, default=1.0,
                         help="rad/s^2 (joint-space) for the approach/return moves")
+
+    # Release guard ----------------------------------------------------------------
+    parser.add_argument("--min-release-dist", type=float, default=1.0,
+                        help="m (horizontal, base frame) a release must originate from to be treated as a "
+                             "real throw - blocks hand-near-robot false releases (a real 2026-07-16 "
+                             "self-collision started as one). Every real recorded throw released >=1.1m out; "
+                             "0 disables. See check_release_guard().")
+    parser.add_argument("--max-away-deg", type=float, default=100.0,
+                        help="deg - a release moving more than this far off the toward-the-robot direction "
+                             "(with real horizontal speed) is ignored as not-a-throw-at-the-arm "
+                             "(real throws' p90 was 27deg). See check_release_guard().")
+
+    # Re-aim ------------------------------------------------------------------------
+    parser.add_argument("--no-reaim", action="store_true",
+                        help="Disable post-commit re-aiming. By default, once the committed move has "
+                             "finished (arm at rest) and the ball is still in flight, the loop keeps "
+                             "refitting and - if the refined predicted catch point has drifted >"
+                             "--reaim-min from the committed target, the correction move still fits the "
+                             "time budget, and the new target passes the same catch envelope - sends a "
+                             "short correction move. Fires only from rest (never preempts a running "
+                             "move), so it uses the exact same primitive/safety path as the commit move. "
+                             "Data motivation: commits fire at ~43 samples where prediction error is "
+                             "6-17cm; by 67-80 samples it is 2-5cm (docs/debug_log.md 2026-07-17).")
+    parser.add_argument("--reaim-min", type=float, default=0.02,
+                        help="m minimum drift of the refined prediction from the committed target before "
+                             "a correction move is worth sending (default 0.02)")
+    parser.add_argument("--reaim-max-count", type=int, default=3,
+                        help="max correction moves per throw (default 3)")
 
     # Commit / trust --------------------------------------------------------------
     parser.add_argument("--commit-samples", type=int, default=40,
@@ -668,7 +847,12 @@ def main():
                              "auto-named) for later analysis - no Motive replay needed, the raw "
                              "trajectory is in the log itself - see CLAUDE.md 'Run recording'.")
     parser.add_argument("--yes", action="store_true", help="Skip the pre-motion confirmation prompt")
-    parser.add_argument("--poll-hz", type=float, default=20.0, help="Feasibility-check/print rate during flight")
+    parser.add_argument("--poll-hz", type=float, default=50.0,
+                        help="Feasibility-check rate during flight (default 50, was 20 - each poll interval "
+                             "is pure decision latency before the commit fires: at 20Hz that cost 25ms mean/"
+                             "50ms worst, ~3-6cm of arm travel. The full-flight fit is a few np.polyfit "
+                             "calls, microseconds - 50Hz is still nowhere near the hot NatNet thread's "
+                             "budget. Console prints are throttled separately, see PRINT_MIN_INTERVAL_S.)")
     parser.add_argument("--robot-ip", default=ROBOT_IP, help="UR12e controller IP")
     parser.add_argument("--no-wrapup", action="store_true",
                         help="Skip the end-of-session name/description prompt and robot log pull")
@@ -756,9 +940,17 @@ def main():
           f"orient=({wait_pose[3]:+.3f},{wait_pose[4]:+.3f},{wait_pose[5]:+.3f})")
     print(f"catch plane (mocap): {AXIS_NAMES[catch_axis_idx]} = {catch_value:.4f}")
     print(f"catch envelope: reach[{CATCH_MIN_REACH},{CATCH_MAX_REACH}]m  z[{CATCH_Z_MIN:+.2f},{CATCH_Z_MAX:+.2f}]m  "
-          f"(no cap on distance from wait pose)")
-    print(f"catch movel: v={args.speed} m/s a={args.accel} m/s^2   |   "
-          f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
+          f"azimuth +/-{CATCH_MAX_AZIMUTH_DEG:.0f}deg of wait pose  (no cap on distance from wait pose)")
+    if args.catch_move == "movej":
+        print(f"catch movej: v={args.catch_joint_speed} rad/s a={args.catch_joint_accel} rad/s^2 "
+              f"(joint-space, --catch-move movej)   |   "
+              f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
+    else:
+        print(f"catch movel: v={args.speed} m/s a={args.accel} m/s^2   |   "
+              f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
+    print(f"yaw-follow: {'ON' if (not args.no_yaw_follow) else 'off'}   re-aim: "
+          + ("off" if args.no_reaim else f"ON (drift>{args.reaim_min*100:.0f}cm, max {args.reaim_max_count}/throw, from rest only)")
+          + f"   release guard: dist>={args.min_release_dist}m, away<={args.max_away_deg:.0f}deg")
     print(f"commit: n>={args.commit_samples} AND (feasible OR possibly-catch) - fires on the FIRST "
           f"qualifying tick; uses the last {args.stability_window}-prediction average (agreeing within "
           f"{args.drift_tol}m) as the target point when already available, else the raw current prediction")
@@ -772,11 +964,16 @@ def main():
             tcp_offset=tcp_offset, robot_mode=robot_mode, speed_fraction=frac,
             wait_pose=wait_pose, catch_axis=AXIS_NAMES[catch_axis_idx], catch_value=catch_value,
             catch_envelope={"reach_min": CATCH_MIN_REACH, "reach_max": CATCH_MAX_REACH,
-                            "z_min": CATCH_Z_MIN, "z_max": CATCH_Z_MAX},
+                            "z_min": CATCH_Z_MIN, "z_max": CATCH_Z_MAX,
+                            "max_azimuth_deg": CATCH_MAX_AZIMUTH_DEG},
             move_time_model={"accel": model.accel, "latency": model.latency, "v_max": model.v_max,
                              "residual_rms": model.residual_rms, "n_legs": model.n_legs},
             speed_char_json=speed_char_json,
             catch_speed=args.speed, catch_accel=args.accel,
+            catch_move=args.catch_move, catch_joint_speed=args.catch_joint_speed,
+            catch_joint_accel=args.catch_joint_accel, yaw_follow=(not args.no_yaw_follow),
+            reaim=not args.no_reaim, reaim_min=args.reaim_min, reaim_max_count=args.reaim_max_count,
+            min_release_dist=args.min_release_dist, max_away_deg=args.max_away_deg,
             approach_speed=args.approach_speed, approach_accel=args.approach_accel,
             commit_samples=args.commit_samples, stability_window=args.stability_window,
             drift_tol=args.drift_tol, margin=args.margin, box_radius=args.box_radius,
@@ -820,7 +1017,35 @@ def main():
     last_state = "idle"
     attempted = False           # fired a catch for the current throw already
     refuse_logged = False       # throttle envelope-refusal spam within one throw
+    guard_reason = None         # non-None: this throw failed the release guard, never commit
+    committed_target = None     # base-frame xyz the last commit/re-aim was sent to
+    reaim_count = 0             # correction moves sent for the current throw
+    catches = 0                 # session tally: attempted throws whose ball was last seen at the tool
+    attempts_ended = 0          # attempted throws that reached throw_end (denominator for the tally)
+    last_print_wall = 0.0       # console print throttle (ticks are recorded regardless)
+    last_flight_logged = None   # FlightRecord already given a throw_end/throw_samples (dedup
+                                # between the normal flight->idle path and the post-fault path)
+    PRINT_MIN_INTERVAL_S = 0.08  # ~12 lines/s max during flight - readable at --poll-hz 50
+    # A ball that disappears within this of the tool was (almost certainly) swallowed
+    # by the box - it occludes its own markers. Validated against all 74 classifiable
+    # committed throws of 2026-07-16: agrees with the session notes at ~91% catch
+    # rate; misses were last seen 1.5m+ away. See docs/debug_log.md 2026-07-17.
+    CAUGHT_LAST_SEEN_DIST_M = 0.30
     pred_window: deque = deque(maxlen=args.stability_window)
+
+    def catch_move_script(pose: List[float]) -> str:
+        """The one place a catch/correction move gets turned into URScript - movel
+        (straight Cartesian line, current default) or movej (joint-space, immune to
+        the side-target base-joint speed violation) per --catch-move."""
+        if args.catch_move == "movej":
+            qnear = list(rtde_r.getActualQ())
+            return movej_to_pose_script(pose, qnear, args.catch_joint_speed, args.catch_joint_accel)
+        return movel_absolute_script(pose, args.speed, args.accel)
+
+    def target_orientation(point: np.ndarray) -> List[float]:
+        if (not args.no_yaw_follow):
+            return yaw_follow_orientation(wait_pose, wait_xyz, point)
+        return [wait_pose[3], wait_pose[4], wait_pose[5]]
 
     def stable() -> Optional[np.ndarray]:
         """Mean predicted catch point if the window is full and agrees within drift-tol, else None."""
@@ -852,8 +1077,30 @@ def main():
                     fault = check_safety_mode(rtde_r, dash, last_normal)
                     if fault is not None:
                         fault_count = wait_for_fault_clear(rec, fault, fault_count, rtde_r, dash, last_normal, wait_pose, args)
+                        # A flight that ended while the arm was frozen/waiting never
+                        # reaches the normal flight->idle logging below (last_state is
+                        # force-reset here), which made faulted throws the one class
+                        # with NO throw_end/throw_samples in the log - exactly the
+                        # throws forensics needs most (the 151342 self-collision throw
+                        # could not be reconstructed because of this). Capture it now.
+                        with STATE_LOCK:
+                            hh = s.history[0] if s.history else None
+                        if hh is not None and hh is not last_flight_logged:
+                            rec.log("throw_end", reason=f"{hh.reason} (logged post-fault)",
+                                    duration=hh.duration, samples=hh.samples,
+                                    peak_speed=hh.peak_speed, attempted=attempted,
+                                    guarded=guard_reason is not None, reaims=reaim_count,
+                                    arm_tcp_at_end=list(rtde_r.getActualTCPPose()),
+                                    ball_last_dist_m=None, caught_guess=None)
+                            if hh.raw_samples:
+                                rec.log("throw_samples", t=hh.raw_samples[0].t,
+                                        raw=[[smp.t, smp.x, smp.y, smp.z] for smp in hh.raw_samples])
+                            last_flight_logged = hh
                         attempted = False
                         refuse_logged = False
+                        guard_reason = None
+                        committed_target = None
+                        reaim_count = 0
                         pred_window.clear()
                         last_state = "idle"
                         continue
@@ -875,12 +1122,22 @@ def main():
                     print(f"--- throw detected (rigid body {target_id}) ---")
                     attempted = False
                     refuse_logged = False
+                    committed_target = None
+                    reaim_count = 0
                     pred_window.clear()
                     rec.throw += 1
                     rec.log("throw_start", t=flight_buffer[-1].t if flight_buffer else None,
                             rigid_body_id=target_id, arm_tcp=list(rtde_r.getActualTCPPose()))
+                    # Release guard: judged once, on the first ~10 samples, before any
+                    # feasibility tick may commit - see check_release_guard().
+                    guard_reason = check_release_guard(flight_buffer, R, t_vec,
+                                                       args.min_release_dist, args.max_away_deg)
+                    if guard_reason is not None:
+                        print(f"    >> GUARDED (no commit this throw): {guard_reason}")
+                        rec.log("guard", t=flight_buffer[-1].t if flight_buffer else None,
+                                reason=guard_reason)
 
-                if state == "flight" and not attempted and len(flight_buffer) >= MIN_SAMPLES_FOR_CHECK:
+                if state == "flight" and guard_reason is None and len(flight_buffer) >= MIN_SAMPLES_FOR_CHECK:
                     current_tcp_xyz = np.array(rtde_r.getActualTCPPose()[:3])  # RTDE FK only - never mocap
                     result = check_feasibility(
                         flight_buffer, catch_axis_idx, catch_value, R, t_vec, current_tcp_xyz,
@@ -888,7 +1145,10 @@ def main():
                     )
                     if result.crossing_t is not None:
                         pred_window.append(result.catch_point_base)
-                        print(format_result(result))
+                        now_wall = time.time()
+                        if now_wall - last_print_wall >= PRINT_MIN_INTERVAL_S:
+                            print(format_result(result))
+                            last_print_wall = now_wall
 
                         gate = result.feasible or result.possible
                         trusted = stable()
@@ -904,6 +1164,9 @@ def main():
                         # use the stability-window average as the commit POINT when it's
                         # already available (free noise reduction, pred_window fills
                         # regardless of this gate) - it just never blocks the DECISION.
+                        # The early commit's target IS noisy (6-17cm at ~43 samples vs 2-5cm
+                        # at 67-80) - that's what the post-commit re-aim below repairs, from
+                        # rest, once better data exists.
                         commit_point = trusted if trusted is not None else result.catch_point_base
                         rec.log("tick", t=flight_buffer[-1].t, n=result.n_samples,
                                 verdict=_verdict(result), reach=result.reach, from_tcp=current_tcp_xyz,
@@ -911,12 +1174,14 @@ def main():
                                 move_time=result.move_time, t_impact=result.time_to_impact,
                                 margin=result.margin, shortfall=result.shortfall,
                                 stable=trusted is not None, trusted_point=trusted,
+                                post_commit=attempted,
                                 commit_ready=len(flight_buffer) >= args.commit_samples)
 
-                        if gate and len(flight_buffer) >= args.commit_samples:
+                        if not attempted and gate and len(flight_buffer) >= args.commit_samples:
+                            orient = target_orientation(commit_point)
                             target_pose = [float(commit_point[0]), float(commit_point[1]), float(commit_point[2]),
-                                           wait_pose[3], wait_pose[4], wait_pose[5]]
-                            reason = check_catch_envelope(commit_point)
+                                           orient[0], orient[1], orient[2]]
+                            reason = check_catch_envelope(commit_point, wait_xyz)
                             if reason is not None:
                                 if not refuse_logged:
                                     print(f"    >> REFUSED (envelope): {reason} - no motion sent")
@@ -925,17 +1190,57 @@ def main():
                             else:
                                 verdict = "CATCH" if result.feasible else "POSSIBLY"
                                 stability_note = "" if trusted is not None else "  [instant, pred_window not full yet]"
-                                print(f"    >> COMMIT ({verdict}){stability_note}: movel to "
+                                print(f"    >> COMMIT ({verdict}){stability_note}: {args.catch_move} to "
                                       f"({commit_point[0]:+.3f},{commit_point[1]:+.3f},{commit_point[2]:+.3f}) "
-                                      f"v={args.speed} a={args.accel}"
+                                      + (f"v={args.catch_joint_speed}rad/s a={args.catch_joint_accel}rad/s^2"
+                                         if args.catch_move == "movej" else f"v={args.speed} a={args.accel}")
                                       + ("   [dry-run: not sent]" if args.dry_run else ""))
                                 rec.log("commit", t=flight_buffer[-1].t,
                                         verdict="catch" if result.feasible else "possible",
                                         target_pose=target_pose, speed=args.speed, accel=args.accel,
+                                        move_kind=args.catch_move, yaw_follow=(not args.no_yaw_follow),
                                         stable=trusted is not None, dry_run=args.dry_run)
                                 if not args.dry_run:
-                                    send_script(movel_absolute_script(target_pose, args.speed, args.accel))
+                                    send_script(catch_move_script(target_pose))
+                                committed_target = np.array(commit_point, dtype=float)
                                 attempted = True
+
+                        elif (attempted and not args.no_reaim and committed_target is not None
+                              and reaim_count < args.reaim_max_count):
+                            # Post-commit re-aim: the commit above fired at the earliest
+                            # eligible tick, on a deliberately-early (noisy) prediction. The
+                            # fit keeps refining while the arm travels/waits - if the arm has
+                            # already ARRIVED (at rest; this never preempts a running move)
+                            # and the refined prediction has drifted meaningfully off the
+                            # committed target with enough time left to correct, send one
+                            # short correction move through the exact same envelope check and
+                            # motion primitive as the commit itself.
+                            settled = args.dry_run or max(
+                                abs(v) for v in rtde_r.getActualTCPSpeed()) < 0.01
+                            new_point = trusted if trusted is not None else result.catch_point_base
+                            drift = float(np.linalg.norm(np.array(new_point) - committed_target))
+                            if settled and drift >= args.reaim_min:
+                                corr_dist = float(np.linalg.norm(np.array(new_point) - current_tcp_xyz))
+                                corr_time = model.estimate(corr_dist)
+                                if (result.time_to_impact is not None
+                                        and result.time_to_impact > corr_time + args.margin
+                                        and check_catch_envelope(np.array(new_point), wait_xyz) is None):
+                                    orient = target_orientation(np.array(new_point))
+                                    corr_pose = [float(new_point[0]), float(new_point[1]), float(new_point[2]),
+                                                 orient[0], orient[1], orient[2]]
+                                    reaim_count += 1
+                                    print(f"    >> RE-AIM #{reaim_count}: drift {drift*100:.1f}cm, "
+                                          f"{args.catch_move} to ({new_point[0]:+.3f},{new_point[1]:+.3f},"
+                                          f"{new_point[2]:+.3f}), corr_time={corr_time:.2f}s "
+                                          f"t_impact={result.time_to_impact:.2f}s"
+                                          + ("   [dry-run: not sent]" if args.dry_run else ""))
+                                    rec.log("reaim", t=flight_buffer[-1].t, n=result.n_samples,
+                                            count=reaim_count, drift=drift, target_pose=corr_pose,
+                                            corr_time=corr_time, t_impact=result.time_to_impact,
+                                            stable=trusted is not None, dry_run=args.dry_run)
+                                    if not args.dry_run:
+                                        send_script(catch_move_script(corr_pose))
+                                    committed_target = np.array(new_point, dtype=float)
                     else:
                         rec.log("tick", t=flight_buffer[-1].t, n=result.n_samples, verdict="no_crossing",
                                 note=result.note)
@@ -945,12 +1250,42 @@ def main():
                         print(f"--- throw ended ({history_head.reason}), dur={history_head.duration:.2f}s "
                               f"n={history_head.samples} peak={history_head.peak_speed:.2f}m/s ---")
                     end_tcp = list(rtde_r.getActualTCPPose())
+                    # Catch/miss heuristic: a caught ball disappears INTO the box (its own
+                    # markers get occluded), so "last seen right at the tool, then gone" is
+                    # the catch signature - a missed ball is last seen sailing past/landing
+                    # 1.5m+ away. Validated against the 74 classifiable committed throws of
+                    # 2026-07-16 (docs/debug_log.md 2026-07-17). A heuristic for the tally/
+                    # log, not a control input.
+                    caught_guess = None
+                    ball_last_dist = None
+                    if history_head is not None and history_head is last_flight_logged:
+                        # already logged by the post-fault capture above - don't double-log
+                        last_state = state
+                        time.sleep(1.0 / args.poll_hz)
+                        continue
+                    last_flight_logged = history_head
+                    if history_head is not None and history_head.raw_samples:
+                        last_s = history_head.raw_samples[-1]
+                        last_base = mocap_point_to_base(np.array([last_s.x, last_s.y, last_s.z]), R, t_vec)
+                        ball_last_dist = float(np.linalg.norm(last_base - np.array(end_tcp[:3])))
+                        if attempted:
+                            caught_guess = ball_last_dist < CAUGHT_LAST_SEEN_DIST_M
+                            attempts_ended += 1
+                            if caught_guess:
+                                catches += 1
+                                print(f"    CATCH! (ball last seen {ball_last_dist*100:.0f}cm from tool)"
+                                      f"   session: {catches}/{attempts_ended} attempted")
+                            else:
+                                print(f"    missed - ball last seen {ball_last_dist:.2f}m from tool"
+                                      f"   session: {catches}/{attempts_ended} attempted")
                     rec.log("throw_end",
                             reason=history_head.reason if history_head else None,
                             duration=history_head.duration if history_head else None,
                             samples=history_head.samples if history_head else None,
                             peak_speed=history_head.peak_speed if history_head else None,
-                            attempted=attempted, arm_tcp_at_end=end_tcp)
+                            attempted=attempted, arm_tcp_at_end=end_tcp,
+                            guarded=guard_reason is not None, reaims=reaim_count,
+                            ball_last_dist_m=ball_last_dist, caught_guess=caught_guess)
                     # The actual ground-truth ball trajectory for this throw, not just
                     # its summary stats - a separate event (not folded into throw_end)
                     # so a plain grep for throw_end stays small/scannable while this
@@ -985,7 +1320,11 @@ def main():
             stop_reason = "keyboard_interrupt"
         finally:
             print(f"\nstopping ({stop_reason or 'unknown'}) - sending stopl.")
-            rec.log("run_end", reason=stop_reason or "unknown")
+            if attempts_ended:
+                print(f"session tally: {catches}/{attempts_ended} attempted throws caught "
+                      f"(heuristic - ball last seen <{CAUGHT_LAST_SEEN_DIST_M*100:.0f}cm from tool)")
+            rec.log("run_end", reason=stop_reason or "unknown",
+                    catches=catches, attempts_ended=attempts_ended)
             if not args.dry_run:
                 try:
                     send_script(stopl_script())
@@ -999,7 +1338,8 @@ def main():
     # Deliberately outside the try/finally above and after the NatNet/RTDE
     # connections are fully closed - see wrap_up_session()'s docstring and the
     # module docstring's threading rule.
-    wrap_up_session(session_start_wall, time.time(), rec.throw, record_path, args)
+    wrap_up_session(session_start_wall, time.time(), rec.throw, record_path, args,
+                    catches=catches, attempts_ended=attempts_ended)
 
 
 if __name__ == "__main__":

@@ -275,6 +275,15 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   already-computed literal instead. A bug here (bare list instead of a `p[...]` pose
   literal) caused a real emergency stop. Always double-check function signatures
   before using a new URScript primitive.
+- **A `movel` to a side target is a joint-speed violation waiting to happen**: a
+  straight Cartesian line at TCP speed v and reach r demands base-joint speed ~v/r —
+  at the real faulting commits (r=0.44–0.79m, v=1.1–1.5 m/s) that's 137–195°/s, over
+  the 120°/s base limit → C153A0. Measured on the 2026-07-16 sessions: fault rate vs
+  target azimuth swing from the wait pose (accel≤4) was 0% <10°, 36% at 20–35°, 50%
+  >35°. Lowering `--accel` never fixes this (it's a velocity-on-path violation, not
+  acceleration). `catch.py --catch-move movej` (+ `--yaw-follow`) is the designed fix —
+  a movej plans in joint space and cannot violate joint limits — pending real-arm
+  validation. See `docs/debug_log.md` 2026-07-17.
 - **Home position is a singularity** — pendant jogging (and any move command) can
   throw a false "no IK solution" error there. Freedrive off home position first before
   assuming it's a real fault.
@@ -379,9 +388,32 @@ rules" `wait_for_fault_clear()`. **Robot position
 comes from RTDE FK only, never mocap** — it's
 validated against a looping Motive *replay* where the tool RB is frozen. Own
 conservative catch envelope (`check_catch_envelope`: reach 0.45–1.20m, base-z
-−0.25…+0.55m, no cap on distance from wait pose) is the single reviewed "clamp-off"
+−0.25…+0.55m, azimuth ±75° of the wait pose, no cap on distance from wait pose) is
+the single reviewed "clamp-off"
 path — no `--force` spam. Reach floor raised 0.35→0.45m 2026-07-15 after a real
-protective stop (see "Run recording" below and `docs/debug_log.md`). `--dry-run`
+protective stop (see "Run recording" below and `docs/debug_log.md`). Azimuth band
+added 2026-07-17 after a real self-collision: a hand grabbing the ball out of the
+box was detected as a throw and committed the arm to a target 158° behind the wait
+azimuth. Same incident class also spawned `check_release_guard()` (default on): a
+release originating <1.0m (horizontal) from the base, or moving >100° away from
+it, is logged as a `guard` event and never commits — thresholds set from all 161
+recorded real throws (release ≥1.1m p5, toward-robot angle ≤27° p90), which all
+pass. **Post-commit re-aim** (2026-07-17, default on, `--no-reaim`): commits fire
+at ~43 samples where prediction error is still 6–17cm (vs 2–5cm at 67–80 samples,
+measured on real throws); once the committed move has settled (never preempting
+motion) the loop keeps refitting and sends a short envelope-checked correction
+move when the refined prediction drifts ≥2cm and the time budget allows (≤3 per
+throw, `reaim` events in the JSONL). `--catch-move movej` + `--yaw-follow` are
+the fix for the side-throw protective stops (see Key safety rules) — **both
+promoted to default-on 2026-07-17** after a first real session confirmed no
+new faults (`--catch-move movel` / `--no-yaw-follow` still available). Possible
+regression to watch: an unconfirmed operator impression that catch accuracy got
+slightly worse with movej on — see "movej accuracy" in Open Questions. `--poll-hz` default 50 (was 20 — poll interval is
+pure decision latency); console prints throttled, ticks all recorded. throw_end
+now logs a `caught_guess` (ball last seen <30cm from tool ⇒ swallowed by the box;
+matched session notes at ~91% on 2026-07-16 data) plus a live session tally, and
+faulted throws now get their `throw_end`/`throw_samples` logged post-fault-clear
+too (previously they were the one class with no trajectory in the log). `--dry-run`
 logs every decision with zero motion; confirmation prompt
 before the first move. Keep the heavy fit off the socket-recv thread (existing
 threading rule). **Must `set_tcp()` the calibrated `tcp_offset` at startup** — it's a
@@ -514,8 +546,16 @@ every exit path, including Ctrl-C.
   real trajectory prediction is driving the arm.
 - `ur_rtde`/External Control URCap root cause still open (deprioritized, not urgent —
   raw URScript-over-socket is a working fallback for now). See `docs/debug_log.md`.
+- **`--catch-move movej` accuracy** (now the default, 2026-07-17): unconfirmed operator
+  impression from the first live session running it that catches landed a bit less
+  accurately than under the old `movel` default. Not root-caused — candidate
+  explanations include the commit/re-aim logic (`catch_move_script`, `reaim` correction
+  path) still assuming movel-like behavior somewhere, or IK solution jitter from
+  `get_inverse_kin qnear=current joints` picking a slightly different elbow/wrist
+  configuration than the direct Cartesian line would. Investigate before trusting movej
+  for anything needing a tighter tool than the current funnel.
 
-## Status (2026-07-16)
+## Status (2026-07-17)
 Real motion works (raw URScript-over-socket, 2026-07-10/11). Trajectory
 fitting/prediction works against recorded and live OptiTrack data.
 
@@ -524,20 +564,32 @@ fitting/prediction works against recorded and live OptiTrack data.
 `track_rigid_body.py` continuously drives the arm to park under a tracked rigid body
 via `frames.py` — mocap → transform → live motion is proven and reported working well.
 
-**`catch.py` (the conductor: prediction → feasibility gate → committed `movel` on a
-thrown ball) is built and dry-run validated** against a live Motive replay — see the
-2026-07-15 `set_tcp()` bug in `docs/debug_log.md` (catch.py/catch_feasibility.py were
-silently commanding the flange instead of the funnel, undershooting every catch by the
-12cm `tcp_offset`; fixed in both). Not yet fired for real against a live thrown ball —
-that's the next step, starting with `--dry-run` again on the real arm/throw before
-removing it. Loose end worth tightening before v2: calibration RMSE is 27.7 mm (fine
-for a wide funnel, not a cup).
+**`catch.py` IS CATCHING REAL THROWN BALLS.** 2026-07-16 afternoon: 23 real
+sessions, 196 throws, 108 commits, an estimated **~91% catch rate on committed
+throws** (last-seen-near-tool heuristic vs session notes). Full quantitative
+analysis of those logs: `docs/debug_log.md` 2026-07-17. The recurring pain was
+protective stops on side throws — root-caused to movel base-joint speed violation
+(see Key safety rules), payload/CoG having fixed only the straight-ahead cases.
+Practical operating point found that day: `--accel 3.0–4.0`, `--speed 1.1–1.5`.
 
-**2026-07-16 session-robustness pass on `catch.py`** (see "Catch Integration" for
-detail): SSH access to the UR controller confirmed working (key auth, alias `ur12e`)
-and is now used to pull the robot's own `log_history.txt`/`polyscope.log`/flight
-reports; a detected fault no longer kills the session (waits for a human to clear it,
-no auto-clear); Enter now stops a session cleanly alongside Ctrl-C; and every throw's
-raw `(t,x,y,z)` trajectory is captured into `--record`'s JSONL, so a session no
-longer needs a Motive replay to be researched afterward. None of this has been
-exercised on a real live-throw session yet — still the next step.
+**2026-07-17 night-shift pass on `catch.py`**: release guard + envelope azimuth
+band (kills the false-release/self-collision class), post-commit re-aim (default
+on — fixes the committed-target-is-noisy problem), `--catch-move movej`/
+`--yaw-follow`, `--poll-hz` 50, live catch/miss tally, faulted throws now logged.
+Details in "Catch Integration" and `docs/debug_log.md` 2026-07-17. Also that
+entry's negative result: do NOT constrain the trajectory fit to gravity —
+measured worse than the free quadratic on real throws.
+
+**All of the above promoted to defaults same day**, after a first real session
+confirmed them: `--catch-move movej` and `--yaw-follow` are now ON by default
+(`--no-yaw-follow` to disable; plain `movel` still available via
+`--catch-move movel`) — the fix for side-throw protective stops. New default
+operating point: `--accel 4.0 --speed 1.2 --approach-speed 1.5`, wait pose
+re-taught to `(0.042, -0.716, 0.139, 1.584, -0.0824, -0.0573)`, and
+`--rigid-body-id` now defaults to `3` (the standard ball-RB id once base/tool RBs
+are also in the scene — auto-select no longer reliable with 3 rigid bodies
+present). See the "movej accuracy" entry in Open Questions — an unconfirmed
+operator impression that catches got slightly less accurate with movej on.
+
+Loose end worth tightening before any smaller-than-box catch tool: calibration
+RMSE is 27.7 mm (fine for a wide funnel, dominant error source for a cup).
