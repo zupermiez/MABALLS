@@ -298,6 +298,39 @@ def yaw_follow_orientation(wait_pose: List[float], wait_xyz: np.ndarray,
     return [float(rv[0]), float(rv[1]), float(rv[2])]
 
 
+def tilt_follow_orientation(base_rv: List[float], impact_vel_base: np.ndarray,
+                            max_tilt_rad: float) -> List[float]:
+    """Tilt the tool's mouth INTO the incoming ball trajectory: rotate the given
+    orientation (world frame) so the mouth normal (assumed base +Z, mouth-up)
+    leans toward the direction the ball arrives FROM (-v_impact), capped at
+    max_tilt_rad. Functional motivation: a slanted approach sees the mouth
+    aperture foreshortened by cos(incidence angle) - tilting recovers effective
+    aperture exactly where the error budget is tightest. Demo motivation: the
+    wrist visibly 'reaches into' the throw (yaw-follow alone deliberately
+    KEEPS wrist joints still - see yaw_follow_orientation - which is why
+    2026-07-17's yaw-follow sessions showed no visible wrist action).
+    EXPERIMENTAL (2026-07-18 night shift, opt-in via --tilt-follow): not yet
+    validated on the real arm - IK reachability of tilted poses near the
+    envelope edge is the thing to watch first."""
+    v = np.asarray(impact_vel_base, dtype=float)
+    vn = float(np.linalg.norm(v))
+    if vn < 1e-6:
+        return list(base_rv)
+    n_des = -v / vn                      # unit vector pointing back along the incoming path
+    z = np.array([0.0, 0.0, 1.0])
+    cosang = float(np.clip(np.dot(z, n_des), -1.0, 1.0))
+    full = math.acos(cosang)
+    axis = np.cross(z, n_des)
+    an = float(np.linalg.norm(axis))
+    if an < 1e-9 or full < 1e-6:
+        return list(base_rv)             # ball falling straight down - mouth-up already ideal
+    angle = min(full, max_tilt_rad)
+    q_tilt = np.concatenate([[math.cos(angle / 2)], (axis / an) * math.sin(angle / 2)])
+    q_base = _rotvec_to_quat(base_rv)
+    rv = _quat_to_rotvec(_quat_multiply(q_tilt, q_base))
+    return [float(rv[0]), float(rv[1]), float(rv[2])]
+
+
 def check_release_guard(flight_buffer: List, R: np.ndarray, t_vec: np.ndarray,
                         min_release_dist: float, max_away_deg: float = 100.0,
                         min_horiz_speed: float = 1.0) -> Optional[str]:
@@ -790,6 +823,14 @@ def main():
                              "wait pose, so the (rotationally symmetric, mouth-up) tool pans with the base "
                              "instead of the wrist fighting to hold a fixed world orientation through a side "
                              "sweep. Paired with --catch-move movej.")
+    parser.add_argument("--tilt-follow", type=float, default=0.0, metavar="DEG",
+                        help="EXPERIMENTAL (2026-07-18, off by default, not yet real-arm validated): "
+                             "tilt the tool mouth into the incoming ball trajectory by up to DEG "
+                             "degrees (e.g. 20). Recovers the aperture lost to a slanted approach "
+                             "(cos(incidence)) and makes the wrist visibly track the throw - "
+                             "yaw-follow alone keeps wrist joints deliberately still, which is why "
+                             "no wrist motion was visible on 2026-07-17. Composes on top of "
+                             "yaw-follow. Watch IK reachability near the envelope edge on first use.")
     parser.add_argument("--approach-speed", type=float, default=1.5,
                         help="rad/s (joint-space - this move is a movej, not a movel, see move_to()) "
                              "for the move to/return-to wait pose (default 1.5, the 2026-07-17 operating "
@@ -824,6 +865,22 @@ def main():
                              "a correction move is worth sending (default 0.02)")
     parser.add_argument("--reaim-max-count", type=int, default=3,
                         help="max correction moves per throw (default 3)")
+    parser.add_argument("--reaim-preempt", action="store_true",
+                        help="EXPERIMENTAL (2026-07-18, off by default, not yet real-arm validated): "
+                             "allow a re-aim correction to PREEMPT the still-running catch move instead "
+                             "of waiting for the arm to settle. Data motivation: on 2026-07-17, re-aim "
+                             "fired on only 2 of 98 attempts - 69 blocked because the arm never settled "
+                             "before impact, 27 because no time remained after settling - so the "
+                             "designed noise-repair loop was effectively dormant and every early-commit "
+                             "error stayed locked in. The correction program starts with an explicit "
+                             "stopj() so the preemption decelerates deliberately, but replacing a "
+                             "running program mid-move is exactly the kind of thing to validate at low "
+                             "--speed/--catch-joint-speed on the real arm before trusting. First "
+                             "validation run: watch for protective stops at the preemption instant.")
+    parser.add_argument("--reaim-preempt-min", type=float, default=0.05,
+                        help="m minimum drift before a PREEMPTING correction (while the arm is still "
+                             "moving) is sent - deliberately larger than --reaim-min so marginal "
+                             "corrections don't repeatedly interrupt a good move (default 0.05)")
 
     # Commit / trust --------------------------------------------------------------
     parser.add_argument("--commit-samples", type=int, default=40,
@@ -948,9 +1005,14 @@ def main():
     else:
         print(f"catch movel: v={args.speed} m/s a={args.accel} m/s^2   |   "
               f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
-    print(f"yaw-follow: {'ON' if (not args.no_yaw_follow) else 'off'}   re-aim: "
-          + ("off" if args.no_reaim else f"ON (drift>{args.reaim_min*100:.0f}cm, max {args.reaim_max_count}/throw, from rest only)")
-          + f"   release guard: dist>={args.min_release_dist}m, away<={args.max_away_deg:.0f}deg")
+    reaim_desc = "off" if args.no_reaim else (
+        f"ON (drift>{args.reaim_min*100:.0f}cm, max {args.reaim_max_count}/throw, "
+        + (f"PREEMPT allowed >={args.reaim_preempt_min*100:.0f}cm [EXPERIMENTAL]" if args.reaim_preempt
+           else "from rest only") + ")")
+    print(f"yaw-follow: {'ON' if (not args.no_yaw_follow) else 'off'}   "
+          f"tilt-follow: {('%.0fdeg [EXPERIMENTAL]' % args.tilt_follow) if args.tilt_follow > 0 else 'off'}   "
+          f"re-aim: {reaim_desc}"
+          f"   release guard: dist>={args.min_release_dist}m, away<={args.max_away_deg:.0f}deg")
     print(f"commit: n>={args.commit_samples} AND (feasible OR possibly-catch) - fires on the FIRST "
           f"qualifying tick; uses the last {args.stability_window}-prediction average (agreeing within "
           f"{args.drift_tol}m) as the target point when already available, else the raw current prediction")
@@ -973,6 +1035,8 @@ def main():
             catch_move=args.catch_move, catch_joint_speed=args.catch_joint_speed,
             catch_joint_accel=args.catch_joint_accel, yaw_follow=(not args.no_yaw_follow),
             reaim=not args.no_reaim, reaim_min=args.reaim_min, reaim_max_count=args.reaim_max_count,
+            reaim_preempt=args.reaim_preempt, reaim_preempt_min=args.reaim_preempt_min,
+            tilt_follow_deg=args.tilt_follow,
             min_release_dist=args.min_release_dist, max_away_deg=args.max_away_deg,
             approach_speed=args.approach_speed, approach_accel=args.approach_accel,
             commit_samples=args.commit_samples, stability_window=args.stability_window,
@@ -1033,19 +1097,31 @@ def main():
     CAUGHT_LAST_SEEN_DIST_M = 0.30
     pred_window: deque = deque(maxlen=args.stability_window)
 
-    def catch_move_script(pose: List[float]) -> str:
+    def catch_move_script(pose: List[float], preempt: bool = False) -> str:
         """The one place a catch/correction move gets turned into URScript - movel
         (straight Cartesian line, current default) or movej (joint-space, immune to
-        the side-target base-joint speed violation) per --catch-move."""
+        the side-target base-joint speed violation) per --catch-move. With
+        preempt=True (--reaim-preempt corrections only) the program leads with an
+        explicit stopj() so preempting a still-running move decelerates
+        deliberately rather than relying on the controller's implicit
+        program-replacement stop."""
         if args.catch_move == "movej":
             qnear = list(rtde_r.getActualQ())
-            return movej_to_pose_script(pose, qnear, args.catch_joint_speed, args.catch_joint_accel)
-        return movel_absolute_script(pose, args.speed, args.accel)
+            script = movej_to_pose_script(pose, qnear, args.catch_joint_speed, args.catch_joint_accel)
+        else:
+            script = movel_absolute_script(pose, args.speed, args.accel)
+        if preempt:
+            script = script.replace("def prog():\n", f"def prog():\n  stopj({args.catch_joint_accel})\n", 1)
+        return script
 
-    def target_orientation(point: np.ndarray) -> List[float]:
+    def target_orientation(point: np.ndarray, impact_vel=None) -> List[float]:
         if (not args.no_yaw_follow):
-            return yaw_follow_orientation(wait_pose, wait_xyz, point)
-        return [wait_pose[3], wait_pose[4], wait_pose[5]]
+            rv = yaw_follow_orientation(wait_pose, wait_xyz, point)
+        else:
+            rv = [wait_pose[3], wait_pose[4], wait_pose[5]]
+        if args.tilt_follow > 0.0 and impact_vel is not None:
+            rv = tilt_follow_orientation(rv, impact_vel, math.radians(args.tilt_follow))
+        return rv
 
     def stable() -> Optional[np.ndarray]:
         """Mean predicted catch point if the window is full and agrees within drift-tol, else None."""
@@ -1178,7 +1254,7 @@ def main():
                                 commit_ready=len(flight_buffer) >= args.commit_samples)
 
                         if not attempted and gate and len(flight_buffer) >= args.commit_samples:
-                            orient = target_orientation(commit_point)
+                            orient = target_orientation(commit_point, result.impact_vel_base)
                             target_pose = [float(commit_point[0]), float(commit_point[1]), float(commit_point[2]),
                                            orient[0], orient[1], orient[2]]
                             reason = check_catch_envelope(commit_point, wait_xyz)
@@ -1219,17 +1295,25 @@ def main():
                                 abs(v) for v in rtde_r.getActualTCPSpeed()) < 0.01
                             new_point = trusted if trusted is not None else result.catch_point_base
                             drift = float(np.linalg.norm(np.array(new_point) - committed_target))
-                            if settled and drift >= args.reaim_min:
+                            # --reaim-preempt (2026-07-18): the settle-first design turned out
+                            # effectively dormant on real data (2 firings in 98 attempts; the
+                            # arm's travel time consumed the whole remaining flight) - opting in
+                            # lets a big-enough drift interrupt the running move instead, at a
+                            # deliberately higher threshold (--reaim-preempt-min).
+                            preempting = (not settled) and args.reaim_preempt
+                            min_drift = args.reaim_min if settled else args.reaim_preempt_min
+                            if (settled or preempting) and drift >= min_drift:
                                 corr_dist = float(np.linalg.norm(np.array(new_point) - current_tcp_xyz))
                                 corr_time = model.estimate(corr_dist)
                                 if (result.time_to_impact is not None
                                         and result.time_to_impact > corr_time + args.margin
                                         and check_catch_envelope(np.array(new_point), wait_xyz) is None):
-                                    orient = target_orientation(np.array(new_point))
+                                    orient = target_orientation(np.array(new_point), result.impact_vel_base)
                                     corr_pose = [float(new_point[0]), float(new_point[1]), float(new_point[2]),
                                                  orient[0], orient[1], orient[2]]
                                     reaim_count += 1
-                                    print(f"    >> RE-AIM #{reaim_count}: drift {drift*100:.1f}cm, "
+                                    print(f"    >> RE-AIM #{reaim_count}{' (preempt)' if preempting else ''}: "
+                                          f"drift {drift*100:.1f}cm, "
                                           f"{args.catch_move} to ({new_point[0]:+.3f},{new_point[1]:+.3f},"
                                           f"{new_point[2]:+.3f}), corr_time={corr_time:.2f}s "
                                           f"t_impact={result.time_to_impact:.2f}s"
@@ -1237,9 +1321,10 @@ def main():
                                     rec.log("reaim", t=flight_buffer[-1].t, n=result.n_samples,
                                             count=reaim_count, drift=drift, target_pose=corr_pose,
                                             corr_time=corr_time, t_impact=result.time_to_impact,
+                                            preempt=preempting,
                                             stable=trusted is not None, dry_run=args.dry_run)
                                     if not args.dry_run:
-                                        send_script(catch_move_script(corr_pose))
+                                        send_script(catch_move_script(corr_pose, preempt=preempting))
                                     committed_target = np.array(new_point, dtype=float)
                     else:
                         rec.log("tick", t=flight_buffer[-1].t, n=result.n_samples, verdict="no_crossing",

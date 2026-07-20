@@ -74,6 +74,63 @@ def umeyama_rigid_transform(source: np.ndarray, destination: np.ndarray) -> Tupl
     return R, t
 
 
+def rotvec_to_matrix(rv: np.ndarray) -> np.ndarray:
+    """Rodrigues: axis-angle rotation vector (UR pose rx,ry,rz convention) -> 3x3 matrix."""
+    rv = np.asarray(rv, dtype=float)
+    theta = float(np.linalg.norm(rv))
+    if theta < 1e-12:
+        return np.eye(3)
+    k = rv / theta
+    K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
+
+
+def fit_transform_with_tool_offset(
+    p_mocap: np.ndarray, tcp_poses: np.ndarray, iterations: int = 100, tol: float = 1e-10
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Jointly solve the mocap->base transform AND the marker's fixed offset in
+    the TOOL frame:  R @ p_mocap_i + t  ~=  p_tcp_i + R_tool_i @ d.
+
+    Exists because of a real 2026-07-17 failure (see docs/debug_log.md
+    2026-07-18): a single-marker calibration assumed the marker sat exactly at
+    the configured TCP, but the effective TCP was ~10cm off (stale set_tcp),
+    which poisoned the whole fit (80mm RMSE) in a way plain Umeyama can neither
+    detect nor absorb - an orientation-dependent error is invisible to a
+    position-only fit. Solving d makes the calibration immune to ANY constant
+    tool-frame offset: the marker only has to be RIGID relative to the flange,
+    not precisely placed, and the recovered |d| doubles as a diagnostic (it
+    should match where you think the marker physically is).
+
+    `tcp_poses` is (N, 6): UR TCP pose per sample (x,y,z,rx,ry,rz), from
+    rtde_receive.getActualTCPPose() while stationary. Alternating solve: with d
+    fixed, (R, t) is a plain Umeyama fit onto the corrected targets; with (R, t)
+    fixed, the optimal d is mean_i(R_tool_i^T @ residual_i) (exact, since each
+    R_tool_i is orthonormal). Converges in a handful of iterations.
+
+    Returns (R, t, d, rmse).
+    """
+    p_mocap = np.asarray(p_mocap, dtype=float)
+    tcp_poses = np.asarray(tcp_poses, dtype=float)
+    if tcp_poses.ndim != 2 or tcp_poses.shape[1] != 6 or tcp_poses.shape[0] != p_mocap.shape[0]:
+        raise ValueError("tcp_poses must be (N, 6) matching p_mocap's N")
+    p_tcp = tcp_poses[:, :3]
+    R_tools = np.stack([rotvec_to_matrix(rv) for rv in tcp_poses[:, 3:6]])
+
+    d = np.zeros(3)
+    prev_rmse = np.inf
+    for _ in range(iterations):
+        targets = p_tcp + np.einsum("nij,j->ni", R_tools, d)
+        R, t = umeyama_rigid_transform(p_mocap, targets)
+        residual = mocap_point_to_base(p_mocap, R, t) - p_tcp   # = R_tool_i @ d ideally
+        d = np.einsum("nji,nj->ni", R_tools, residual).mean(axis=0)
+        errs = residual - np.einsum("nij,j->ni", R_tools, d)
+        rmse = float(np.sqrt(np.mean(np.sum(errs**2, axis=1))))
+        if prev_rmse - rmse < tol:
+            break
+        prev_rmse = rmse
+    return R, t, d, rmse
+
+
 def mocap_point_to_base(p_mocap: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
     """Transform mocap-frame point(s) into base-frame.
 
@@ -147,5 +204,32 @@ if __name__ == "__main__":
     # 4) Only 3 points (the hard floor) - should still solve exactly (no noise).
     check("minimal 3-point fit", _random_rotation(rng), rng.uniform(-1, 1, size=3),
           n_points=3, noise_m=0.0)
+
+    # 5) Tool-offset joint solve: marker mounted d away from the TCP in the
+    # tool frame, tool orientation varying per sample - plain Umeyama should
+    # degrade (orientation-dependent error), the joint solve should recover
+    # R, t AND d. This is the exact failure mode of the 2026-07-17 marker
+    # calibration (stale set_tcp), synthesized.
+    R_true, t_true = _random_rotation(rng), rng.uniform(-2.0, 2.0, size=3)
+    d_true = np.array([0.02, -0.01, 0.095])
+    n = 25
+    p_tcp = rng.uniform(-0.8, 0.8, size=(n, 3))
+    rotvecs = rng.uniform(-1.5, 1.5, size=(n, 3))
+    R_tools = np.stack([rotvec_to_matrix(rv) for rv in rotvecs])
+    marker_base = p_tcp + np.einsum("nij,j->ni", R_tools, d_true)
+    # mocap sees the marker: p_mocap = R_true^-1 @ (marker_base - t_true), + noise
+    p_mocap = (marker_base - t_true) @ R_true + rng.normal(0, 0.0005, size=(n, 3))
+    tcp_poses = np.hstack([p_tcp, rotvecs])
+
+    R_plain, t_plain = umeyama_rigid_transform(p_mocap, p_tcp)
+    rmse_plain = float(np.sqrt(np.mean(np.sum(
+        (mocap_point_to_base(p_mocap, R_plain, t_plain) - p_tcp) ** 2, axis=1))))
+    R_fit, t_fit, d_fit, rmse_fit = fit_transform_with_tool_offset(p_mocap, tcp_poses)
+    print(f"[tool-offset solve] plain rmse={rmse_plain * 1000:.1f}mm (poisoned, expected ~|d|)  "
+          f"joint rmse={rmse_fit * 1000:.2f}mm  |d_fit-d_true|={np.linalg.norm(d_fit - d_true) * 1000:.2f}mm")
+    assert rmse_plain > 0.03, "plain fit unexpectedly good - synthetic setup broken"
+    assert rmse_fit < 0.003, f"joint solve rmse too large ({rmse_fit:.5f} m)"
+    assert np.linalg.norm(d_fit - d_true) < 0.005, "recovered tool offset doesn't match ground truth"
+    assert np.max(np.abs(R_fit - R_true)) < 0.01, "joint solve rotation doesn't match ground truth"
 
     print("\nself-test passed")

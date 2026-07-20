@@ -235,6 +235,7 @@ class FeasibilityResult:
     current_tcp: Optional[np.ndarray] = None  # base-frame arm position the move was measured FROM
     shortfall: Optional[float] = None  # m the tool would still be short of the target at impact, if not feasible
     possible: Optional[bool] = None    # not fully feasible, but within box_radius of the target at impact
+    impact_vel_base: Optional[np.ndarray] = None  # ball velocity (m/s, base frame) AT the plane crossing
     note: Optional[str] = None
 
 
@@ -265,6 +266,12 @@ def check_feasibility(
 
     catch_point_mocap = np.array(fit.position(crossing_t))
     catch_point_base = mocap_point_to_base(catch_point_mocap, R, t_vec)
+    # Ball velocity at impact (central difference on the fit - avoids assuming the
+    # AxisFit coefficient layout), rotated to base frame. Consumed by catch.py's
+    # --tilt-follow to aim the tool mouth into the incoming trajectory.
+    eps = 0.01
+    vel_mocap = (np.array(fit.position(crossing_t + eps)) - np.array(fit.position(crossing_t - eps))) / (2 * eps)
+    impact_vel_base = R @ vel_mocap
     reach = float(np.linalg.norm(catch_point_base))
     reachable = min_reach <= reach <= max_reach
 
@@ -291,7 +298,7 @@ def check_feasibility(
         n_samples=len(flight_buffer), crossing_t=crossing_t, time_to_impact=time_to_impact,
         catch_point_base=catch_point_base, reach=reach, reachable=reachable, move_dist=move_dist,
         move_time=move_time, margin=margin, feasible=feasible, current_tcp=current_tcp_xyz,
-        shortfall=shortfall, possible=possible, note=note,
+        shortfall=shortfall, possible=possible, impact_vel_base=impact_vel_base, note=note,
     )
 
 

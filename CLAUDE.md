@@ -403,7 +403,10 @@ at ~43 samples where prediction error is still 6–17cm (vs 2–5cm at 67–80 s
 measured on real throws); once the committed move has settled (never preempting
 motion) the loop keeps refitting and sends a short envelope-checked correction
 move when the refined prediction drifts ≥2cm and the time budget allows (≤3 per
-throw, `reaim` events in the JSONL). `--catch-move movej` + `--yaw-follow` are
+throw, `reaim` events in the JSONL). **2026-07-18 finding: the settle-first
+design is effectively dormant on real data** (2 firings in 98 attempts —
+travel time eats the window); `--reaim-preempt` (opt-in, unvalidated) lets a
+≥5cm drift interrupt the running move instead (leads with `stopj()`). `--catch-move movej` + `--yaw-follow` are
 the fix for the side-throw protective stops (see Key safety rules) — **both
 promoted to default-on 2026-07-17** after a first real session confirmed no
 new faults (`--catch-move movel` / `--no-yaw-follow` still available). Possible
@@ -494,11 +497,12 @@ plus any flight-report zip triggered during it. Lands in
 `log_history_slice.txt` + `polyscope_slice.txt` + any pulled flight report. Runs on
 every exit path, including Ctrl-C.
 
-**Recommended order (status as of 2026-07-14):**
-- (1) ✅ **frame registration + rigid bodies — DONE.** `calibrate_frames.py` + `frames.py`
-  work; `T_base_from_mocap.json` produced (25 samples, **RMSE 27.7 mm** — usable for a
-  wide funnel, too loose for a cup; likely the TCP marker isn't exactly on the TCP point
-  or `tcp_offset` is off — worth tightening before v2). `track_rigid_body.py` closes the
+**Recommended order (status as of 2026-07-20):**
+- (1) ✅ **frame registration + rigid bodies — DONE, recalibrated 2026-07-20.**
+  `calibrate_frames.py` + `frames.py` work; current default `T_base_from_mocap.json`
+  (25 samples, single-marker + tool-offset joint solve, **4.25 mm fit RMSE**, live
+  verify pass agreeing to **1.5–9mm**) supersedes the old 07-14 rigid-body calibration
+  (27.7mm, kept as `T_base_from_mocap_old.json`). `track_rigid_body.py` closes the
   full spatial pipeline (mocap → transform → live motion, tool parks under a tracked
   body) — this is the continuous form of step (3), and it validates the transform end to
   end. **Reported working well.**
@@ -546,23 +550,25 @@ every exit path, including Ctrl-C.
   real trajectory prediction is driving the arm.
 - `ur_rtde`/External Control URCap root cause still open (deprioritized, not urgent —
   raw URScript-over-socket is a working fallback for now). See `docs/debug_log.md`.
-- **`--catch-move movej` accuracy** (now the default, 2026-07-17): unconfirmed operator
-  impression from the first live session running it that catches landed a bit less
-  accurately than under the old `movel` default. Not root-caused — candidate
-  explanations include the commit/re-aim logic (`catch_move_script`, `reaim` correction
-  path) still assuming movel-like behavior somewhere, or IK solution jitter from
-  `get_inverse_kin qnear=current joints` picking a slightly different elbow/wrist
-  configuration than the direct Cartesian line would. Investigate before trusting movej
-  for anything needing a tighter tool than the current funnel.
+- ~~`--catch-move movej` accuracy~~ **RESOLVED 2026-07-18**: full-log analysis of all
+  2026-07-17 sessions found NO movej regression — caught-ball proximity was marginally
+  *tighter* under movej (9.9 vs 11.2cm median), catch rates and prediction errors don't
+  differ by move kind. The "felt worse" sessions were rim-out misses (prediction-side,
+  throw-dependent). movej stays the default. See `docs/debug_log.md` 2026-07-18 §3.
+- **`--reaim-preempt` and `--tilt-follow` need real-arm validation** (2026-07-18, both
+  opt-in): preempt replaces a running move (validate at low speed, watch for protective
+  stops at the preemption instant); tilt-follow needs an IK-reachability check near the
+  envelope edge. Motivations + data: `docs/debug_log.md` 2026-07-18 §2/§4/§8.
 
 ## Status (2026-07-17)
 Real motion works (raw URScript-over-socket, 2026-07-10/11). Trajectory
 fitting/prediction works against recorded and live OptiTrack data.
 
 **Spatial pipeline connected end to end:** frame registration done
-(`calibrate_frames.py` → `T_base_from_mocap.json`, 27.7 mm RMSE), and
-`track_rigid_body.py` continuously drives the arm to park under a tracked rigid body
-via `frames.py` — mocap → transform → live motion is proven and reported working well.
+(`calibrate_frames.py` → `T_base_from_mocap.json`, recalibrated 2026-07-20 to
+4.25mm fit RMSE — see "2026-07-20" below), and `track_rigid_body.py` continuously
+drives the arm to park under a tracked rigid body via `frames.py` — mocap →
+transform → live motion is proven and reported working well.
 
 **`catch.py` IS CATCHING REAL THROWN BALLS.** 2026-07-16 afternoon: 23 real
 sessions, 196 throws, 108 commits, an estimated **~91% catch rate on committed
@@ -591,5 +597,83 @@ are also in the scene — auto-select no longer reliable with 3 rigid bodies
 present). See the "movej accuracy" entry in Open Questions — an unconfirmed
 operator impression that catches got slightly less accurate with movej on.
 
-Loose end worth tightening before any smaller-than-box catch tool: calibration
-RMSE is 27.7 mm (fine for a wide funnel, dominant error source for a cup).
+~~Loose end worth tightening before any smaller-than-box catch tool: calibration
+RMSE is 27.7 mm~~ **DONE 2026-07-20** — recalibrated to 4.25mm, see below.
+
+**2026-07-18 night shift — forensic pass on all 2026-07-17 logs + calibration
+root cause** (full numbers `docs/debug_log.md` 2026-07-18; analysis scripts in
+`analysis/`): day totals 160 throws, 98 commits, 75/93 caught (81%). Key
+findings: (1) misses are RIM HITS — 14/17 measurable misses put the ball
+within 13–21cm of the box center; true prediction error is median 13cm, i.e.
+the error budget lands balls on the rim — a wider/energy-absorbing mouth is
+the single biggest catch-rate lever (~91% would have been caught); (2) re-aim
+was found effectively DORMANT (2 firings/98 attempts — arm travel eats the
+settle window) — `--reaim-preempt` is the designed fix, opt-in, unvalidated;
+(3) movej accuracy question resolved, no regression (see Open Questions);
+(4) yaw-follow worked (up to 41° commanded) — no visible wrist motion is by
+design (wrist joints deliberately held still); `--tilt-follow DEG` (opt-in)
+gives functional, visible wrist action instead; (5) the single-marker
+calibration failure (80mm RMSE) was a stale/wrong TCP during `p_robot` reads
+(~10cm fixed flange-frame offset, provable from the data), NOT a mocap
+problem — `calibrate_frames.py` now records full TCP poses, jointly solves
+the marker's tool-frame offset (`frames.fit_transform_with_tool_offset`,
+default on), and wiggle-tests `set_tcp()` at startup, making marker placement
+precision irrelevant; redo the calibration with the new pipeline (expect
+≤27.7mm, likely much less — **confirmed 2026-07-20, see below**); (6) the
+after-lunch camera reconfig did NOT shift the mocap frame — the 07-14
+transform stayed valid all day.
+
+## 2026-07-20 — recalibration with the tool-offset joint solve, `verify_live()` bug found and fixed
+
+Redid the single-marker calibration with the (already-implemented but not yet
+live-tested) `fit_transform_with_tool_offset` pipeline: `python3
+calibrate_frames.py --unlabeled-marker`, 25 samples. Plain rigid fit was 84.91mm
+(expected — the marker sits ~1cm from the flange, nowhere near the configured
+12cm box-centroid `--tcp-offset`), but the **tool-offset joint solve landed at
+4.25mm RMSE**, solving the marker's tool-frame offset at `d ≈ (0, 1, -92)mm` —
+confirming the feature works as designed (this is the same mechanism that fixed
+the 2026-07-17 80mm marker-calibration failure, now validated on new data, not
+just the synthetic self-test). Promoted to the new default: old `T_base_from_mocap.json`
+(07-14, rigid-body, 27.7mm) renamed to `T_base_from_mocap_old.json`; the new
+25-sample marker calibration is now `T_base_from_mocap.json`. Every script that
+reads the default filename (`catch.py`, `catch_feasibility.py`,
+`track_rigid_body.py`) picks this up automatically — no code changes needed
+there. Its `tcp_offset` field was the 12cm box-centroid offset the calibration
+run happened to have configured (calibration always sends the *configured*
+`--tcp-offset`, independent of where the physical marker actually was — that
+decoupling is the whole point of the joint solve); **since superseded, see
+below — a smaller box went on the same day and the field was updated to
+match.**
+
+**Box swapped to a smaller one, same day**: a new 15.5(w) x 14.5(d) cm box
+replaced the earlier 30x23x24cm one, flush-mounted the same way (centered on
+the depth-wise back face) → geometric center now sits **7.25cm** out along
+flange Z (was 12cm). `T_base_from_mocap.json`'s `tcp_offset` field was updated
+in place to `[0,0,0.0725,0,0,0]` (R/t untouched — the mocap→base transform
+doesn't depend on which tool is attached, only `tcp_offset`, the "what point
+to `set_tcp()` to" metadata, does) — `catch.py`/`catch_feasibility.py`/
+`track_rigid_body.py` need no changes, they all read this field at runtime.
+`calibrate_frames.py`'s `TCP_OFFSET` default (and `--tcp-offset` help text)
+updated to `0.0725` to match for any future from-scratch calibration.
+
+**Found and fixed a real bug in `verify_live()`** (the live predicted-vs-actual
+sanity check calibrate_frames.py runs at the end): it compared the joint-solve's
+`R, t` prediction — which is the tracked *marker's* base-frame position
+(`p_tcp + R_tool @ d`) — directly against the raw TCP pose, with no correction
+for `d`. Since `d` is real and ~92mm here, this manifested as a spurious ~92.6mm
+"error" during verification even though the fit itself was 4.25mm RMSE
+(`norm(d)=92.4mm` matches the observed 92.6mm to 0.2mm — confirmed root cause,
+not coincidence). Not a regression from a later edit — checked via `git diff`:
+`verify_live()` was never touched when the tool-offset feature was added, so
+this was a pre-existing gap in the original implementation, not a case of one
+model changing code another model relied on. Fixed: `verify_live()` now takes
+`d` and adds `R_tool_current @ d` onto the actual TCP pose before comparing.
+Also slowed its print loop from 10Hz to 2Hz — each `\r`-updated line still lands
+as a separate entry in terminal scrollback (only the on-screen line was
+overwritten), flooding history on a normal multi-second verify run.
+
+**Post-fix live verification**: predicted vs actual agreed to **1.5–5mm** through
+most of the workspace, **8–9mm** on the side opposite the throwing direction —
+a real, if modest, calibration-quality dropoff there (extrapolation beyond the
+sampled poses is the likely cause) but still well under the old 27.7mm baseline
+everywhere tested.

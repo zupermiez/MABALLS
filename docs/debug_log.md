@@ -1036,3 +1036,130 @@ tool than the current funnel:
 Next step: replay/compare `throw_end`'s actual TCP pose vs the committed
 target pose across this session's JSONL, movej throws vs a matched movel
 baseline, before concluding there's a real effect.
+
+## 2026-07-18 (night shift) — full forensic pass on the 2026-07-17 sessions, marker-calibration root cause, re-aim found dormant
+
+All numbers reproducible from `catch_logs/catch_log_20260717_*.jsonl` alone via
+the scripts now in `analysis/` (analyze_0717.py, deep_0717.py, kinks_0717.py,
+calib_forensics.py, tcp_hypothesis.py, bias_0717.py, refused_map.py). 12
+sessions, 160 throws, 98 committed attempts, 75 caught of 93 classifiable
+(81%). Sessions 10:52–10:56 ran movel/no-yaw-follow (old wait pose), 11:02–15:48
+movej+yaw-follow, 15:51 movel+yaw-follow. All sessions all day ran the OLD
+07-14 transform (`T_base_from_mocap.json`, run_start confirms) — the new
+marker calibrations were never used live.
+
+### 1. The misses are rim hits, not wild misses
+For every attempted throw the ball's true catch-plane crossing was
+reconstructed two ways: from the raw recorded samples (recorded crossing) and
+from a clean mid-flight ballistic fit (samples 15–45, extrapolated to the
+plane — immune to post-contact deflection). Result: on 14 of 17 measurable
+missed throws the ball got within 13–21cm of the committed target center
+(min ball-to-target distance) and its recorded trajectory shows a violent
+post-contact kink — i.e. it REACHED the box and bounced off the rim/out
+(matches the two session notes "went in but bounced out"). Ballistic
+prediction error on missed throws: median 13.1cm (p25 9.7, p75 19.4). The
+box's effective radius (~15cm) sits mid-distribution: the current system's
+total error budget lands balls ON THE RIM, and rim hits mostly bounce out.
+Two consequences, in order of leverage:
+- A modestly wider and/or energy-absorbing mouth (net/foam rim/deeper funnel)
+  converts most rim hits to catches: would have been ~89/98 (91%) vs 75/98.
+- Cutting the residual 10–20cm error (re-aim actually firing + tighter
+  calibration) does the same in software.
+Important correction to an earlier read: a naive "prediction error" computed
+against the RECORDED crossing (median ~45cm, non-converging with n) is
+garbage on committed throws — the recorded crossing is post-deflection. Use
+the ballistic reconstruction.
+
+### 2. Arm error is zero; re-aim is dormant
+On every measurable miss the arm's TCP at throw_end was at the committed
+target to ~0.0cm — misses are 100% prediction, 0% motion. The re-aim
+mechanism built to repair exactly this fired on only 2 of 98 attempts.
+Blocker classification per attempt (from post-commit ticks): 69 "arm never
+settled in time" (travel consumed the remaining flight), 27 "settled but no
+time budget left". The settle-first design is structurally too late at these
+flight times — hence `--reaim-preempt` (below).
+
+### 3. movej accuracy question: RESOLVED — no regression
+- Caught-ball proximity proxy (ball_last_dist on caught throws): movej median
+  9.9cm (n=52) vs movel 11.2cm (n=23) — movej marginally TIGHTER.
+- Catch rates: movej 52/63 (83%); morning movel 8/9; evening movel+yaw-follow
+  15/21 (71%, and that session's notes say harder throws + it was last).
+- Ballistic prediction errors don't differ by move kind.
+Operator impression of worse movej accuracy is not supported; the "worse"
+feel came from rim-out misses, which are throw/prediction-driven. movej
+stays a sound default.
+
+### 4. Yaw-follow worked — and is invisible by design
+Commanded orientations DID rotate (|d_az| median ~9–11°, max 41° across
+committed throws; the 15:51 movel session also ran with it on). No visible
+wrist motion is the DESIGN: yaw-follow keeps the wrist joints still relative
+to the arm's plane (the base pans, the tool orientation follows), where
+no-yaw-follow would make the wrist counter-rotate to hold world orientation.
+For visible wrist action that's also functional, `--tilt-follow DEG` (new,
+opt-in) tilts the mouth into the incoming trajectory (recovers
+cos(incidence) aperture loss; e.g. a 37° incidence throw gets the full 20°
+cap and comes down to 17°).
+
+### 5. Why 62/160 throws never committed
+- 46 feasibility-gate refusals: they crossed the plane a median 0.51m from
+  the wait pose with median 0.56s to impact at the first tick — a ~0.7s move
+  against 0.56s of warning. Median shortfall 0.41m: NOT marginal; these are
+  genuinely too fast/flat for a ~1.25m/s arm from a standing start. Even
+  waiting at the refusal-cloud centroid would rescue only ~7/44. The honest
+  lever is throw discipline (loft) — or v2 mid-flight streaming.
+- 10 release-guard rejections, of which 5 released at 0.89–0.99m — right
+  under the 1.0m threshold and plausibly REAL close-range throws (the other
+  5: 0.46–0.79m + wrong-direction, correctly rejected). If throwing from
+  close is desired, `--min-release-dist 0.85` looks safe (the azimuth
+  envelope still backstops); not changed as default.
+- 2 azimuth refusals (targets 118°/170° behind), 2 too-short flights, 1 no
+  plane crossing. Wait pose vs all-throw crossing centroid: crossings center
+  ~(-0.12,-0.91) vs wait (0.04,-0.72) — shifting the wait pose ~15–20cm
+  toward -x/-y would center the workload slightly; small win, worth a try.
+
+### 6. Camera reconfig did NOT shift the mocap frame
+Evening (post-reconfig) throws show no directional bias shift vs morning
+(mean error vector +32,-17,0 → +25,0,0 mm; medians 93→105mm) and nothing
+resembling the 69mm marker-vs-old-transform offset. The old transform stayed
+valid all day. (This is also what acquits the camera reconfig in the
+marker-calibration failure below.)
+
+### 7. Single-marker calibration root cause: a stale/wrong TCP poisoned p_robot
+The two marker runs (15:02/15:17, RMSE 80.3/74.2mm) are internally awful but
+agree with EACH OTHER to 13mm median in the catch zone while both sitting
+69mm from the (still-valid) old transform → a systematic shared by both
+runs, not noise. Discriminator: using the old transform as ground truth for
+the marker's true base position, |p_robot − marker_true| = 99±23mm (run 1)
+/ 93±31mm (run 2) with direction swinging ~75° across poses — a FIXED ~10cm
+offset in the FLANGE frame between the point the robot reported and the
+physical marker. The marker sat at flange+1–1.7cm; the box TCP is 12cm:
+the effective TCP during p_robot reads was ~10cm out along tool Z, i.e. the
+z=0.01/0.017 set_tcp either never took effect or didn't describe the real
+marker. Umeyama can neither detect nor absorb an orientation-dependent
+error, so it smeared into 80mm RMSE. Not a mocap problem, not the camera
+reconfig, not single-marker noise. Fixes implemented (all offline-tested,
+`python3 frames.py` self-test reproduces the exact failure synthetically:
+plain fit 80mm → joint solve 0.85mm, offset recovered to 0.07mm):
+- `frames.fit_transform_with_tool_offset()`: joint solve of (R, t) AND the
+  marker's fixed tool-frame offset d from full 6D TCP poses. Marker
+  placement precision no longer matters at all — anywhere rigid on the tool
+  works — and the printed |d| doubles as a mounting sanity check.
+- `calibrate_frames.py` now records the full TCP pose per sample, runs the
+  joint solve by default (`--no-solve-offset` reverts), and
+  `apply_and_verify_tcp()` wiggle-tests set_tcp at startup (+5cm tool-Z
+  probe must move the reported pose) so an ignored write aborts loudly.
+- Old-format JSONs still resume (offset solve skips pose-less samples).
+Expectation for the next calibration run: the same 25-pose procedure should
+now land at or below the old 27.7mm — likely well below, since the joint
+solve also absorbs the box-pivot-vs-TCP mismatch that plausibly dominated
+the ORIGINAL 27.7mm (its similarity-fit scale 0.987 hints some volume-level
+error too; if RMSE stays >15mm after the joint solve, re-wand the volume).
+
+### 8. New catch.py flags (both opt-in, neither real-arm validated)
+- `--reaim-preempt` (+ `--reaim-preempt-min`, default 5cm): re-aim may
+  replace the running catch move (program starts with an explicit stopj()).
+  Validate at low speed first; watch for protective stops at the preemption
+  instant. This is the targeted fix for finding #2.
+- `--tilt-follow DEG`: see #4. Watch IK reachability near the envelope edge.
+`impact_vel_base` (ball velocity at plane crossing, base frame) was added to
+`FeasibilityResult` to support tilt-follow.
