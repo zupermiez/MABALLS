@@ -252,6 +252,31 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   saves JSON+PNG. Same segment-as-safety-envelope model as `ur_loop.py` (`--pose-a`/
   `--pose-b` on a long clear non-singular path, `--force-start` for the first move).
   Produced the 2026-07-14 speed numbers above.
+- `ur_servo.py` — **the v2 streaming control layer (2026-07-20, validated).**
+  Continuous `servoj` setpoint streaming at 125-500Hz via a **reverse socket**:
+  ONE persistent URScript program is sent to :30002, and *it* calls
+  `socket_open()` back to this laptop (robot = TCP client, laptop = server);
+  setpoints then stream as packed int32s over that open connection. A per-tick
+  send cannot work at servo rates — each send opens a fresh connection and
+  preempts the running program — so do NOT "fix" this back into the
+  send-a-script-per-tick shape every other motion script here uses. Robot-side:
+  a `servoj` thread self-timed by its own `t`, always using the latest setpoint
+  (latest-wins, deliberately NOT the circular buffer UR's servoj article
+  describes — that's for replaying precomputed trajectories, and queueing here
+  would only add latency). Poses go over the wire, `get_inverse_kin` runs on the
+  robot. Exports `RateLimiter`, `ServoStream`, `add_servo_args` for reuse.
+  `--self-test` = offline math/encoding checks, no robot. `--bench` = canned
+  sine sweep with no perception in the loop (this is the "prototype
+  `servo_track.py` standalone first" step). Measured first run: **2473
+  setpoints, 0 late ticks, 3.1mm lag at 125Hz**.
+- `track_ball_servo.py` — first perception-driven use of the above: the tool
+  continuously follows the tracked ball, retargeting every tick. Reported
+  working well / "very responsive" on its first real run (2026-07-20). It
+  **pursues the ball's current position** — no release detection, no prediction,
+  no feasibility gate, so do NOT throw at it; it exists to measure how well the
+  arm follows a moving mocap-derived setpoint. `--dry-run` runs the full
+  pipeline with no program sent; `--record` writes per-tick JSONL to
+  `servo_logs/` (gitignored) for lag analysis.
 - `jog_ur.py`, `ur_move_test.py`, `ur_movel_test.py`, `ur_speedscale_diag.py`,
   `ur_rtde_diag.py`, `ur_freq_test.py`, `ur_latency_probe.py` — `ur_rtde`-based
   scripts from the paused investigation; not currently working end-to-end, kept for
@@ -262,6 +287,17 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   control session** — skips Python's `finally` cleanup, strands the robot's real-time
   thread, causes a protective stop on the next run. See
   [[robot_control_testing_safety]] memory.
+- **`servoj` has NO speed limit of its own** — hand it a joint target far from
+  the current one and it drives there as hard as `gain` allows, which on this arm
+  means a protective stop or worse. So the setpoint STREAM, not the robot, is
+  what has to be well-behaved: `ur_servo.RateLimiter` bounds every setpoint
+  relative to the **previous setpoint** (never the arm's measured position —
+  that lets lag accumulate into a lunge) and accel-limits the step vector so
+  direction reversals are bounded too. Any new streaming code must go through it.
+  Corollary: a streaming script's failure paths must send an explicit hold
+  (`servo=0`), never just stop sending — silence for `--sock-timeout` ends the
+  robot's program outright. And never pass `sock_timeout<=0`: URScript reads that
+  as "block forever", silently deleting the host-crash watchdog (guarded, raises).
 - **The robot controller is shared — other people use it too.** SSH access (see
   "Network setup" above) is root, on a real, currently-in-use controller. Default to
   read-only over that link (pulling/reading logs is fine and expected); don't
@@ -356,12 +392,14 @@ speed/distance deliberately.
 
 **Control primitive — start with a single `movel`.** Because arriving early is free,
 v1 needs no moving-setpoint tracking: as soon as the move is feasible, fire ONE `movel`
-to the intercept over the proven raw-URScript-over-socket path, arrive early, wait. v2
-refinement (chase an improving intercept) = stream
-`servoj`/`servol` at 125-500Hz over **port 30003** (realtime interface — same raw-socket
-style, sidesteps the parked `ur_rtde` issue); mind steady send cadence, servoj
-lookahead/gain, buffer growth under speed-scaling, and the pendant speed slider.
-Prototype `servo_track.py` standalone before wiring into a catch.
+to the intercept over the proven raw-URScript-over-socket path, arrive early, wait.
+
+**v2 streaming — BUILT AND VALIDATED 2026-07-20, see `ur_servo.py` below.** (The
+earlier sketch here said "stream servoj over port 30003"; that was wrong in an
+important way. A per-tick send to *any* of the robot's ports cannot work — each
+send opens a fresh connection AND preempts the still-running program. The
+program is sent once, over 30002, and the robot dials back to us. See
+`ur_servo.py`'s docstring and `docs/debug_log.md` 2026-07-20.)
 
 **End effector — net/funnel with a wide mouth** converts the few-cm error budget into
 forgiveness (10-15cm effective radius). Rigid cup / pinpoint gripper is v3 hero-mode.
@@ -514,7 +552,12 @@ every exit path, including Ctrl-C.
   held-ball run through the actual `catch.py` path is still worth doing once it exists.
 - (4) 🔨 v1 catch — `catch.py` BUILT (lofted throws, fixed plane, single `movel`, funnel,
   pre-positioned wait pose). Needs a live-throw validation run; start with `--dry-run`.
-- (5) ⬜ v2 servoj streaming + tighter margins + smaller tools.
+- (5) 🔨 v2 servoj streaming — **transport DONE and validated 2026-07-20**
+  (`ur_servo.py`, `track_ball_servo.py`; 0 late ticks, 3.1mm lag at 125Hz).
+  Still to do: drive the stream from a PREDICTED intercept rather than the
+  ball's current position, which is what dissolves the commit-then-locked model
+  and targets the 46 throws the feasibility gate currently refuses outright.
+  Then tighter margins + smaller tools.
 
 **Reference prior art / methods:**
 - EPFL/LASA "Catching Objects in Flight" (Kim & Billard) — canonical mocap + fast arm +
@@ -560,7 +603,7 @@ every exit path, including Ctrl-C.
   stops at the preemption instant); tilt-follow needs an IK-reachability check near the
   envelope edge. Motivations + data: `docs/debug_log.md` 2026-07-18 §2/§4/§8.
 
-## Status (2026-07-17)
+## Status (2026-07-20)
 Real motion works (raw URScript-over-socket, 2026-07-10/11). Trajectory
 fitting/prediction works against recorded and live OptiTrack data.
 
@@ -677,3 +720,14 @@ most of the workspace, **8–9mm** on the side opposite the throwing direction �
 a real, if modest, calibration-quality dropoff there (extrapolation beyond the
 sampled poses is the likely cause) but still well under the old 27.7mm baseline
 everywhere tested.
+
+**v2 streaming works.** `ur_servo.py` + `track_ball_servo.py` (2026-07-20):
+continuous `servoj` setpoint streaming over a reverse socket, validated on the
+real arm on the first try — `--bench` measured **2473 setpoints, 0 late ticks,
+3.1mm lag at 125Hz**, and `track_ball_servo.py` follows a hand-moved ball
+"very responsively". This is the architectural unlock for step (5): there is no
+longer a discrete move that must *finish* before the arm can be retargeted,
+which is what made the post-commit re-aim dormant (2 firings in 98 attempts).
+What remains is driving the stream from a **predicted intercept** instead of the
+ball's current position. Full write-up, including the three URScript gotchas
+that would each have caused a real incident, in `docs/debug_log.md` 2026-07-20.

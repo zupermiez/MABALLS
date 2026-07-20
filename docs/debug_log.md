@@ -1163,3 +1163,90 @@ error too; if RMSE stays >15mm after the joint solve, re-wand the volume).
 - `--tilt-follow DEG`: see #4. Watch IK reachability near the envelope edge.
 `impact_vel_base` (ball velocity at plane crossing, base frame) was added to
 `FeasibilityResult` to support tilt-follow.
+
+## 2026-07-20 — v2 servoj streaming layer built and validated on the real arm
+
+First working piece of CLAUDE.md's step (5): continuous setpoint streaming,
+replacing the commit-then-locked single-move model. Two new files,
+`ur_servo.py` (transport) and `track_ball_servo.py` (perception in the loop).
+Both worked on the first real-arm run.
+
+### Why the obvious approach can't work
+Every existing motion script opens a fresh TCP connection to port 30002 and
+sends a complete program. At servo rates that fails twice over: a connection
+per tick, and each send *preempts* the program still running from the previous
+tick. So the per-tick-send pattern this repo has used everywhere else does not
+extend to 125Hz — it is not a tuning problem, it is structural.
+
+The fix is the **reverse socket**: send ONE persistent program, once, which
+calls `socket_open()` back to the laptop. The robot is the TCP client, the
+laptop the server; setpoints then stream over that already-open connection.
+This is what ur_modern_driver / ur_client_library / ur_rtde all do internally,
+and UR's own `servoj` documentation describes it explicitly: *"x is a pose
+variable with target cartesian positions, received over a socket or RTDE
+registers."* Sidesteps the parked `ur_rtde` control-session issue entirely —
+`rtde_receive` stays read-only, as everywhere else here.
+
+### Three URScript details that would each have caused a real incident
+Verified against the PolyScope 5 Script Directory PDF rather than assumed
+(this controller is PolyScope **5.25.0.130258**):
+1. `socket_read_binary_integer(number, socket_name, timeout)` — a timeout of
+   **0 or negative means "block until a read completes"**, NOT "return
+   immediately". Passing 0 would silently disable the host-crash watchdog and
+   leave a dead host holding the arm's last setpoint with no program-side
+   escape. `servo_program()` now raises on any non-positive timeout, with a
+   self-test asserting it.
+2. On timeout the same call returns **`[0,-1,-1,-1]` — a SHORT list**, not a
+   zero-filled one of the requested length. Indexing `pkt[7]`/`pkt[8]` on that
+   branch is a runtime error mid-servo, so those fields are read only inside
+   the `pkt[0] >= 8` branch.
+3. `get_inverse_kin_has_solution(pose, qnear, ...)` — confirmed parameter name
+   and position from the manual. Guards `get_inverse_kin` so an unreachable
+   setpoint is ignored rather than raising an exception that kills the program
+   while the arm is moving. Available since PolyScope 5.10.
+
+### Design choices worth not re-litigating
+- **Latest-wins, not a circular buffer.** UR's servoj article recommends
+  buffering waypoints; that advice is for replaying a precomputed trajectory
+  where every point matters. Here every setpoint is superseded by the next, so
+  queueing would only add latency. The robot's servo thread is self-timed by
+  `servoj`'s own `t` and always reads the newest `cmd_q`.
+- **Poses over the wire, IK on the robot.** Streaming joints would mean writing
+  and validating a UR kinematics implementation at the same time as debugging
+  the transport — two unvalidated things at once, and an incident you can't
+  attribute. `qnear` is the last COMMANDED q, not the measured one, so IK
+  solution choice can't chatter between branches as the arm lags.
+- **Rate limiter is the load-bearing safety layer.** `servoj` has NO speed
+  limit of its own: hand it a distant q and it drives there as hard as `gain`
+  allows. So the setpoint STREAM, not the robot, has to be well-behaved. Each
+  setpoint is bounded relative to the PREVIOUS SETPOINT (never the arm's
+  measured position — that would let lag accumulate into a lunge), and the step
+  vector's change is accel-limited so a direction reversal is bounded too.
+- **Failure paths send an explicit hold (`servo=0`), never silence.** Going
+  quiet for `--sock-timeout` ends the robot's program outright, a much larger
+  event than pausing.
+
+### Measured, first real run
+`ur_servo.py --bench --bench-amplitude 0.03` (±3cm sine on base Z, 4s period,
+20s, no mocap in the loop):
+
+    2473 setpoints, 0 late ticks (0.0%), lag 3.1mm at 125Hz
+
+Zero late ticks means the host comfortably holds the 8ms budget including three
+RTDE reads per tick. 3.1mm tracking lag on a slow sine is the servo loop
+following properly, not merely accepting packets. `--gain 1000
+--lookahead 0.06` (UR's article values) showed no vibration and were left as
+defaults.
+
+`track_ball_servo.py` then ran against a hand-moved ball and was reported
+"works wonderfully, very responsive" on its first real run.
+
+### What this does NOT yet do
+`track_ball_servo.py` PURSUES the ball's current position — it is not the race
+`catch.py` runs, has no release detection, prediction, or feasibility gate, and
+would chase a real throw at 25cm/s achieving nothing. Its purpose is to measure
+how well the arm follows a continuously-moving mocap-derived setpoint, which is
+the missing input to the step (2) feasibility work: a moving-start intercept is
+only worth building if the arm can follow a moving setpoint at all. It now
+demonstrably can. Wiring the stream to a PREDICTED intercept (v2 catch.py) is
+the next step, and the 46 refused throws of 2026-07-18 section 5 are its target.

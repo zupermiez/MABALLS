@@ -3,3 +3,4 @@ __pycache__/
 .claude/scheduled_tasks.lock
 catch_logs/
 robot_logs/
+servo_logs/
