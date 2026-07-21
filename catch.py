@@ -79,6 +79,11 @@ from trajectory import AXIS_NAMES
 from frames import mocap_point_to_base
 from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script, movej_to_pose_script
 from calibrate_frames import send_urscript, set_tcp_script
+from ur_servo import (
+    RateLimiter, ServoStream, HOST_IP as SERVO_HOST_IP, HOST_PORT as SERVO_HOST_PORT,
+    DEFAULT_GAIN as SERVO_DEFAULT_GAIN, DEFAULT_LOOKAHEAD as SERVO_DEFAULT_LOOKAHEAD,
+    DEFAULT_SERVO_DT, DEFAULT_SOCK_TIMEOUT, DEFAULT_STOP_ACCEL,
+)
 from catch_feasibility import (
     MoveTimeModel, fit_move_time_model, latest_speed_char_json, load_transform,
     check_feasibility, format_result, MIN_SAMPLES_FOR_CHECK, DEFAULT_CRUISE_SPEED,
@@ -141,6 +146,21 @@ ROBOT_LOG_SESSIONS_DIR = os.path.join("robot_logs", "sessions")
 FAULT_WAIT_POLL_S = 0.5
 FAULT_WAIT_REMINDER_S = 15.0
 
+# --- --catch-move servo (2026-07-20) -------------------------------------------
+# Base-joint rate cap for the servo rate limiter, deg/s. The measured cause of the
+# recurring C153A0 protective stops was a Cartesian path demanding base-joint speed
+# = TCP speed / reach, exceeding the 120 deg/s limit on side targets (137-195 deg/s
+# at the real faulting commits). movej avoided this by planning in joint space;
+# servoj does NOT, because the stream still prescribes a Cartesian path - so the
+# constraint is imposed host-side by RateLimiter's tangential cap. 110 leaves ~8%
+# margin under the documented limit.
+SERVO_BASE_RATE_DEG_S = 110.0
+# The safety-mode check is a blocking Dashboard round-trip. At --poll-hz 50 it ran
+# once per tick; servo mode polls at 125Hz, where that would be 125 round-trips a
+# second. Capping it at 50Hz keeps the existing behaviour identical at the old poll
+# rate while stopping it from scaling with the servo rate.
+SAFETY_CHECK_MIN_INTERVAL_S = 0.02
+
 
 def rnd(x, nd: int = 4):
     """Round floats (recursively through lists/tuples/ndarrays/dicts) for compact JSON.
@@ -180,6 +200,15 @@ class Recorder:
     up front whether Motive's replay preserves original frame timestamps exactly or
     rebases them from zero; `throw` (count the Nth throw in the replay, in order) is
     the robust fallback either way.
+
+    The very first line of every log is always a "run_start" event carrying the
+    complete resolved config for that run (every flag, default or overridden alike -
+    see main()'s rec.log("run_start", ...) call). Defaults change over time (e.g.
+    --tilt-follow/--min-release-dist/--reaim-preempt all changed default-vs-override
+    status across sessions on 2026-07-20) and are NOT visible from tick/commit/
+    throw_end lines alone - a session-to-session comparison (or catch-rate diff) that
+    skips diffing run_start against the CURRENT argparse defaults will silently
+    misattribute behavior to the wrong cause. Always read run_start first.
 
     `robot_clock` is `rtde_r.getTimestamp()` - the UR controller's own "time elapsed
     since the controller was started" counter, sampled at the same instant as `wall`
@@ -410,6 +439,73 @@ def check_catch_envelope(target_xyz: np.ndarray, wait_xyz: Optional[np.ndarray] 
             return (f"target azimuth {d_az:.0f}deg from the wait pose (> {max_azimuth_deg:.0f}deg) - "
                     f"behind/beside the demo corridor, refusing")
     return None
+
+
+def clamp_to_envelope(p: np.ndarray, margin: float = 0.0) -> np.ndarray:
+    """Project a point into the catch envelope's reach and z bands.
+
+    Exists because the envelope is NOT CONVEX: it is an annulus (reach 0.45-1.20m)
+    intersected with a z band and an azimuth wedge, so a straight line between two
+    perfectly valid points can leave it. Concretely, sweeping the setpoint from the
+    wait pose (reach 0.73m) to a low-reach side target cuts the corner and dips
+    under the 0.45m inner bound partway across.
+
+    That matters only for streaming. A discrete movel/movej is checked once, at its
+    endpoint, and the controller owns the path in between; a servo setpoint IS the
+    path, so every intermediate point gets checked too - and refusing them would
+    freeze the arm mid-catch, which is both useless and worse than the transient
+    dip it is avoiding. So intermediate points are projected back onto the band
+    rather than rejected: motion stays continuous and always inside the envelope.
+
+    Only reach and z are projected. Azimuth is not, deliberately: it is bounded by
+    the endpoints (both already checked upstream), and "fixing" an azimuth
+    violation by rotating a point would move the tool somewhere nobody asked for.
+    check_catch_envelope() still runs on the result as the real gate - this is a
+    projection, not a substitute for the check.
+
+    Order matters: z is clamped first and then held FIXED while the horizontal
+    component alone is scaled to satisfy the reach band. Scaling the whole vector
+    for reach (the obvious one-liner) would drag z back out of the band it was
+    just clamped into, so the two constraints would fight.
+    """
+    # Land a micron INSIDE each bound, never exactly on it. Clamping to a bound and
+    # then testing against that same bound with <= is fragile: measured, the exact
+    # projection came out 5.6e-17 m under CATCH_MIN_REACH and was refused by the
+    # gate it had just been projected to satisfy. A micron is ~11 orders of
+    # magnitude above that error and physically meaningless next to a 4.25mm
+    # calibration.
+    eps = 1e-6
+    p = np.asarray(p, dtype=float).copy()
+    p[2] = float(np.clip(p[2], CATCH_Z_MIN + eps, CATCH_Z_MAX - eps))
+    z = float(p[2])
+    h = float(np.hypot(p[0], p[1]))
+    # With z fixed, reach^2 = h^2 + z^2, so the reach band becomes a band on h.
+    h_min, h_max = reach_band_at_z(z)
+    if h < 1e-9:
+        return p  # on the base axis; no horizontal direction to scale (degenerate,
+                  # unreachable by interpolating two in-envelope points - the gate
+                  # below still refuses it)
+    h_c = min(max(h, h_min), h_max)
+    if h_c != h:
+        p[0] *= h_c / h
+        p[1] *= h_c / h
+    return p
+
+
+def reach_band_at_z(z: float) -> tuple:
+    """Horizontal-radius band [h_min, h_max] at base-frame height `z` that keeps
+    3D reach inside [CATCH_MIN_REACH, CATCH_MAX_REACH].
+
+    Shared by clamp_to_envelope (projects a single point) and the servo
+    RateLimiter's `reach_bounds` hook (brakes toward this band every tick, see
+    ur_servo.RateLimiter's class docstring) - both need exactly this per-z
+    projection of the spherical reach shell onto a horizontal-radius interval.
+    """
+    eps = 1e-6
+    h_min = math.sqrt(max((CATCH_MIN_REACH + eps) ** 2 - z * z, 0.0))
+    h_max = math.sqrt(max((CATCH_MAX_REACH - eps) ** 2 - z * z, 0.0))
+    return h_min, h_max
+
 
 
 def derive_catch_plane(wait_xyz: np.ndarray, R: np.ndarray, t_vec: np.ndarray) -> float:
@@ -801,7 +897,7 @@ def main():
     # Motion ----------------------------------------------------------------------
     parser.add_argument("--speed", type=float, default=1.2, help="m/s commanded for the CATCH movel (controller clamps; default 1.2, the 2026-07-17 operating point)")
     parser.add_argument("--accel", type=float, default=4.0, help="m/s^2 for the catch movel (default 4.0, the 2026-07-17 operating point)")
-    parser.add_argument("--catch-move", choices=("movel", "movej"), default="movej",
+    parser.add_argument("--catch-move", choices=("movel", "movej", "servo"), default="movej",
                         help="Motion primitive for the catch move. movej (default since 2026-07-17) moves in "
                              "joint space (IK resolved robot-side via get_inverse_kin qnear=current joints, "
                              "same proven path as the wait-pose approach) - it CANNOT violate joint limits by "
@@ -811,7 +907,41 @@ def main():
                              "azimuth swing is large (the 2026-07-16 fault data: 3%% faults <10deg swing, 62%% "
                              "at 20-35deg). Uses --catch-joint-speed/--catch-joint-accel, not --speed/--accel. "
                              "NOTE (2026-07-17): suspected accuracy regression vs movel, not yet root-caused -"
-                             " see docs/debug_log.md 'movej accuracy' open question.")
+                             " see docs/debug_log.md 'movej accuracy' open question. "
+                             "servo (EXPERIMENTAL 2026-07-20, not yet real-arm validated) streams a "
+                             "continuously-retargeted servoj setpoint instead of firing a discrete move - "
+                             "see the --servo-* flags.")
+
+    # Servo streaming (--catch-move servo) ----------------------------------------
+    parser.add_argument("--servo-max-speed", type=float, default=0.6,
+                        help="m/s cap for the servo setpoint stream (default 0.6, half the arm's usable "
+                             "ceiling, chosen for the first validation session - raise once logs look "
+                             "clean). This is enforced host-side by ur_servo.RateLimiter, NOT by servoj, "
+                             "which has no speed limit of its own.")
+    parser.add_argument("--servo-max-accel", type=float, default=2.0,
+                        help="m/s^2 cap for the servo setpoint stream (default 2.0). Also sets the "
+                             "deceleration-aware approach: commanded speed never exceeds "
+                             "sqrt(2*a*distance_remaining), so the setpoint cannot overshoot the "
+                             "intercept (an undamped limiter would overshoot by v^2/2a = 9cm here).")
+    parser.add_argument("--servo-base-rate-deg-s", type=float, default=SERVO_BASE_RATE_DEG_S,
+                        help=f"deg/s cap on the base joint implied by lateral setpoint motion (default "
+                             f"{SERVO_BASE_RATE_DEG_S}). This is the servo-mode replacement for movej's "
+                             f"structural immunity to the side-throw C153A0 fault - servoj does NOT get "
+                             f"that for free. Only the tangential component is capped; radial and "
+                             f"vertical motion don't load the base joint.")
+    parser.add_argument("--servo-rate", type=float, default=125.0,
+                        help="Hz setpoint send rate in servo mode (default 125, the rate validated by "
+                             "ur_servo.py --bench at 0 late ticks). Also becomes the default --poll-hz.")
+    parser.add_argument("--servo-gain", type=float, default=SERVO_DEFAULT_GAIN,
+                        help=f"servoj gain, range [100,2000] (default {SERVO_DEFAULT_GAIN:.0f}). Higher "
+                             f"tracks harder but risks vibration - lower this first if the arm buzzes.")
+    parser.add_argument("--servo-lookahead", type=float, default=SERVO_DEFAULT_LOOKAHEAD,
+                        help=f"servoj lookahead_time, range [0.03,0.2] (default {SERVO_DEFAULT_LOOKAHEAD})")
+    parser.add_argument("--servo-host-ip", default=SERVO_HOST_IP,
+                        help="This machine's IP on the ROBOT subnet - the robot dials it to open the "
+                             "setpoint stream (not the mocap-subnet --local-ip)")
+    parser.add_argument("--servo-host-port", type=int, default=SERVO_HOST_PORT,
+                        help="Host-side TCP port the robot connects back to")
     parser.add_argument("--catch-joint-speed", type=float, default=2.0,
                         help="rad/s leading-joint speed for --catch-move movej (default 2.0 ~ 115deg/s, "
                              "just under the 120deg/s base/shoulder limit)")
@@ -904,8 +1034,10 @@ def main():
                              "auto-named) for later analysis - no Motive replay needed, the raw "
                              "trajectory is in the log itself - see CLAUDE.md 'Run recording'.")
     parser.add_argument("--yes", action="store_true", help="Skip the pre-motion confirmation prompt")
-    parser.add_argument("--poll-hz", type=float, default=50.0,
-                        help="Feasibility-check rate during flight (default 50, was 20 - each poll interval "
+    parser.add_argument("--poll-hz", type=float, default=None,
+                        help="Feasibility-check rate during flight (default 50, or --servo-rate when "
+                             "--catch-move servo - in servo mode this loop also emits the setpoint "
+                             "stream, so the two rates are the same thing. Was 20 - each poll interval"
                              "is pure decision latency before the commit fires: at 20Hz that cost 25ms mean/"
                              "50ms worst, ~3-6cm of arm travel. The full-flight fit is a few np.polyfit "
                              "calls, microseconds - 50Hz is still nowhere near the hot NatNet thread's "
@@ -914,6 +1046,12 @@ def main():
     parser.add_argument("--no-wrapup", action="store_true",
                         help="Skip the end-of-session name/description prompt and robot log pull")
     args = parser.parse_args()
+
+    servo_mode = args.catch_move == "servo"
+    if args.poll_hz is None:
+        # In servo mode this loop IS the setpoint stream, so it must run at the
+        # servo rate; otherwise keep the long-standing 50Hz default.
+        args.poll_hz = args.servo_rate if servo_mode else 50.0
 
     record_path = None
     if args.record:
@@ -998,14 +1136,22 @@ def main():
     print(f"catch plane (mocap): {AXIS_NAMES[catch_axis_idx]} = {catch_value:.4f}")
     print(f"catch envelope: reach[{CATCH_MIN_REACH},{CATCH_MAX_REACH}]m  z[{CATCH_Z_MIN:+.2f},{CATCH_Z_MAX:+.2f}]m  "
           f"azimuth +/-{CATCH_MAX_AZIMUTH_DEG:.0f}deg of wait pose  (no cap on distance from wait pose)")
-    if args.catch_move == "movej":
+    if servo_mode:
+        print(f"catch SERVO STREAM [EXPERIMENTAL]: v<={args.servo_max_speed} m/s a<={args.servo_max_accel} m/s^2 "
+              f"base<={args.servo_base_rate_deg_s:.0f} deg/s")
+        print(f"  stream: {args.servo_rate:.0f}Hz setpoints -> {args.servo_host_ip}:{args.servo_host_port}, "
+              f"servoj gain={args.servo_gain:.0f} lookahead={args.servo_lookahead}   |   "
+              f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
+        print(f"  continuous retargeting: after commit the setpoint follows the refined prediction every "
+              f"tick (--reaim* flags do not apply)")
+    elif args.catch_move == "movej":
         print(f"catch movej: v={args.catch_joint_speed} rad/s a={args.catch_joint_accel} rad/s^2 "
               f"(joint-space, --catch-move movej)   |   "
               f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
     else:
         print(f"catch movel: v={args.speed} m/s a={args.accel} m/s^2   |   "
               f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
-    reaim_desc = "off" if args.no_reaim else (
+    reaim_desc = "n/a (servo mode retargets continuously)" if servo_mode else "off" if args.no_reaim else (
         f"ON (drift>{args.reaim_min*100:.0f}cm, max {args.reaim_max_count}/throw, "
         + (f"PREEMPT allowed >={args.reaim_preempt_min*100:.0f}cm [EXPERIMENTAL]" if args.reaim_preempt
            else "from rest only") + ")")
@@ -1041,7 +1187,11 @@ def main():
             approach_speed=args.approach_speed, approach_accel=args.approach_accel,
             commit_samples=args.commit_samples, stability_window=args.stability_window,
             drift_tol=args.drift_tol, margin=args.margin, box_radius=args.box_radius,
-            cruise_speed=args.cruise_speed)
+            cruise_speed=args.cruise_speed, poll_hz=args.poll_hz,
+            servo=({"max_speed": args.servo_max_speed, "max_accel": args.servo_max_accel,
+                    "base_rate_deg_s": args.servo_base_rate_deg_s, "rate": args.servo_rate,
+                    "gain": args.servo_gain, "lookahead": args.servo_lookahead,
+                    "host": f"{args.servo_host_ip}:{args.servo_host_port}"} if servo_mode else None))
 
     if not args.dry_run:
         initial_sweep = float(np.linalg.norm(np.array(current_pose[:3]) - wait_xyz))
@@ -1050,7 +1200,13 @@ def main():
               f"line distance away) via a bounded movej at {args.approach_speed} rad/s - joint target resolved "
               f"robot-side (get_inverse_kin) from the arm's ACTUAL current joints "
               f"{[f'{v:+.0f}' for v in current_q_deg]} deg, not assumed. Then")
-        print("fires fast catch moves toward thrown balls. Clear the area and keep the E-stop in hand.")
+        if servo_mode:
+            print("brings up a CONTINUOUS servoj setpoint stream and holds the wait pose with it - the arm")
+            print("stays under live servo control for the WHOLE session, not just during a catch. Motion is")
+            print(f"bounded host-side to {args.servo_max_speed} m/s / {args.servo_max_accel} m/s^2 / "
+                  f"{args.servo_base_rate_deg_s:.0f} deg/s base. EXPERIMENTAL - never run on the real arm before.")
+        else:
+            print("fires fast catch moves toward thrown balls. Clear the area and keep the E-stop in hand.")
         if not args.yes:
             if input("Type 'go' to arm motion (anything else aborts): ").strip().lower() != "go":
                 raise SystemExit("aborted.")
@@ -1068,6 +1224,144 @@ def main():
     else:
         print("\n[dry-run] not moving. Feasibility from the arm's CURRENT pose. Throw the ball. "
               "Press Enter (or Ctrl-C) to stop.\n")
+
+    # --- servo stream (--catch-move servo) ------------------------------------
+    # Brought up AFTER the initial movej to the wait pose, never before: sending
+    # any script to :30002 replaces the running program, so a movej issued while
+    # the stream is live would silently kill it. Every send_script()/send_urscript()
+    # call site in this file is therefore either before start_servo_stream() or
+    # after the stream has already been torn down - if you add another, keep that
+    # invariant.
+    stream: Optional[ServoStream] = None
+    limiter: Optional[RateLimiter] = None
+    servo_dt = 1.0 / args.poll_hz
+    servo_target = wait_xyz.copy()          # base-frame xyz the stream is driving toward
+    servo_orient = list(wait_pose[3:6])     # orientation sent with every setpoint
+    last_tick_mono = None                   # monotonic time of the previous emission
+    last_servo_logged = None                # last servo_cmd position written to the log
+    # Declared HERE, above start_servo_stream(), not down with the loop's other
+    # counters: that helper assigns both, and it runs before the loop-state block.
+
+    def start_servo_stream():
+        """(Re)open the stream and seed the limiter from where the arm actually is.
+
+        Seeding from the measured pose rather than the wait pose matters on the
+        restart-after-fault path: the arm may be anywhere, and a limiter seeded at
+        a stale position would make its first step a jump rather than a bounded
+        crawl - defeating the one layer that makes streaming safe at all.
+        """
+        nonlocal stream, limiter, servo_target, servo_orient, last_tick_mono, last_servo_logged
+        st = ServoStream(tcp_offset, args.robot_ip, args.servo_host_ip, args.servo_host_port,
+                         DEFAULT_SERVO_DT, args.servo_lookahead, args.servo_gain,
+                         DEFAULT_STOP_ACCEL, DEFAULT_SOCK_TIMEOUT)
+        st.start()
+        here = list(rtde_r.getActualTCPPose())
+        stream = st
+        limiter = RateLimiter(clamp_to_envelope(np.array(here[:3])),
+                              args.servo_max_speed, args.servo_max_accel,
+                              math.radians(args.servo_base_rate_deg_s),
+                              reach_bounds=reach_band_at_z, z_bounds=(CATCH_Z_MIN, CATCH_Z_MAX))
+        servo_target = wait_xyz.copy()
+        servo_orient = list(wait_pose[3:6])
+        last_tick_mono = None
+        last_servo_logged = None
+        rec.log("servo_stream", state="up", seeded_at=here[:3])
+
+    def stop_servo_stream(reason: str):
+        nonlocal stream, limiter
+        if stream is not None:
+            stream.stop()
+            rec.log("servo_stream", state="down", reason=reason, sent=stream.sent)
+            stream = None
+            limiter = None
+
+    def emit_setpoint():
+        """Send exactly one setpoint. Must run on EVERY loop iteration.
+
+        A nested function rather than inline code at the bottom of the loop
+        specifically because the loop has several `continue` paths (no rigid body
+        yet, post-fault resume, throw_end dedup) that would otherwise skip it.
+        Skipping is not a missed update - it is silence, and --sock-timeout of
+        silence makes the robot end its program and stop. The no-rigid-body path
+        can spin indefinitely, so that one would reliably kill the stream.
+        No-op unless the stream is up, so non-servo modes pay nothing.
+        """
+        nonlocal servo_target, servo_hold_logged, last_tick_mono, last_servo_logged
+        if limiter is None:
+            return  # not servo mode (or the stream is down after a fault)
+
+        # Real elapsed time, not the nominal period: the loop sleeps a fixed
+        # 1/poll_hz WITHOUT subtracting its own work, so the true tick is always
+        # longer than nominal and a nominal dt would make the limiter's speed cap
+        # systematically wrong. Clamped because dt multiplies straight into step
+        # size - a loop stalled by a fault wait or a long log write must not be
+        # able to convert that pause into one huge jump.
+        now_t = time.monotonic()
+        dt_meas = servo_dt if last_tick_mono is None else now_t - last_tick_mono
+        last_tick_mono = now_t
+        dt_eff = min(max(dt_meas, 0.25 * servo_dt), 2.0 * servo_dt)
+
+        # The reach/z envelope is enforced INSIDE the limiter (its reach_bounds/
+        # z_bounds, braking per-axis in cylindrical state - see
+        # ur_servo.RateLimiter's class docstring) - deliberately not by editing the
+        # result here. Post-hoc edits are not rate-limited and destroy the
+        # acceleration guarantee: 60+ m/s^2 measured against a 2.0 cap. Nothing
+        # touches limiter's internal state from outside.
+        cmd_xyz = limiter.step(servo_target, dt_eff)
+        # Independent backstop on what is actually about to be sent, so a limiter
+        # bug or a bad seed cannot slip past both this and the target checks
+        # upstream. One degree of azimuth slack: the commit gate upstream is the
+        # real azimuth decision, and this check runs on intermediate path points
+        # where float noise at exactly the boundary would otherwise freeze the arm
+        # mid-catch for no reason.
+        env = check_catch_envelope(cmd_xyz, wait_xyz, CATCH_MAX_AZIMUTH_DEG + 1.0)
+        if env is None:
+            # stream is None in --dry-run: the limiter, clamp and envelope check all
+            # still run (so a replay session validates exactly the setpoint path a
+            # live run would take), only the send is skipped.
+            alive = stream.send(list(cmd_xyz) + servo_orient, servo=True) if stream else True
+        else:
+            here_xyz = np.array(rtde_r.getActualTCPPose()[:3])
+            limiter.reset(here_xyz)
+            servo_target = here_xyz.copy()
+            alive = stream.send(list(here_xyz) + servo_orient, servo=False) if stream else True
+            if not servo_hold_logged:
+                print(f"    >> SERVO HOLD (envelope): {env}")
+                servo_hold_logged = True
+            rec.log("servo_hold", reason=env, cmd=cmd_xyz)
+
+        # Record the commanded setpoint whenever it has actually moved. Distance-
+        # gated rather than time-gated: it logs densely through a catch (which is
+        # what you want to reconstruct afterwards) and goes quiet at the wait pose,
+        # instead of emitting 125 near-identical lines a second all session.
+        if last_servo_logged is None or float(np.linalg.norm(cmd_xyz - last_servo_logged)) >= 0.005:
+            rec.log("servo_cmd", cmd=cmd_xyz, target=servo_target, dt=dt_eff,
+                    actual=list(rtde_r.getActualTCPPose()[:3]))
+            last_servo_logged = cmd_xyz.copy()
+        if not alive:
+            # The far end went away without the safety check having noticed yet
+            # (protective stop, or the program killed on the pendant). Don't keep
+            # writing into a dead pipe - drop the stream and let the decimated
+            # safety check drive recovery on a later tick.
+            print("\n!!! servo stream died (robot-side program gone) - "
+                  "waiting for the safety check to confirm and recover.")
+            rec.log("servo_stream", state="died", reason="send failed")
+            stop_servo_stream("send failed")
+
+    if servo_mode and not args.dry_run:
+        print("bringing up the servo setpoint stream...")
+        start_servo_stream()
+        print("stream up - the arm is now holding the wait pose under servoj.\n")
+    elif servo_mode:
+        # Dry-run: build the limiter but no stream. emit_setpoint() then runs the
+        # whole setpoint path - rate limit, envelope clamp, envelope gate, logging -
+        # and only skips the send, so a Motive replay validates exactly what a live
+        # run would command without the arm moving at all.
+        limiter = RateLimiter(clamp_to_envelope(np.array(rtde_r.getActualTCPPose()[:3])),
+                              args.servo_max_speed, args.servo_max_accel,
+                              math.radians(args.servo_base_rate_deg_s),
+                              reach_bounds=reach_band_at_z, z_bounds=(CATCH_Z_MIN, CATCH_Z_MAX))
+        print("[dry-run] servo setpoint path active (limiter + envelope), nothing sent.\n")
 
     # --- state ---
     s = SharedState()
@@ -1087,6 +1381,8 @@ def main():
     catches = 0                 # session tally: attempted throws whose ball was last seen at the tool
     attempts_ended = 0          # attempted throws that reached throw_end (denominator for the tally)
     last_print_wall = 0.0       # console print throttle (ticks are recorded regardless)
+    last_safety_check = 0.0     # monotonic time of the last dashboard safety query
+    servo_hold_logged = False   # throttle envelope-hold spam within one throw
     last_flight_logged = None   # FlightRecord already given a throw_end/throw_samples (dedup
                                 # between the normal flight->idle path and the post-fault path)
     PRINT_MIN_INTERVAL_S = 0.08  # ~12 lines/s max during flight - readable at --poll-hz 50
@@ -1149,9 +1445,16 @@ def main():
                 # happening, not retroactively at throw_end. Skipped in --dry-run:
                 # no motion is ever sent there, so an unrelated fault shouldn't
                 # interrupt a pure perception-testing session.
-                if not args.dry_run:
+                now_mono = time.monotonic()
+                if not args.dry_run and now_mono - last_safety_check >= SAFETY_CHECK_MIN_INTERVAL_S:
+                    last_safety_check = now_mono
                     fault = check_safety_mode(rtde_r, dash, last_normal)
                     if fault is not None:
+                        # A protective stop kills the robot-side servo program, so the
+                        # stream is already dead here - tear it down explicitly before
+                        # wait_for_fault_clear(), whose recovery movej goes out over
+                        # :30002 and must not race a half-open stream.
+                        stop_servo_stream("fault")
                         fault_count = wait_for_fault_clear(rec, fault, fault_count, rtde_r, dash, last_normal, wait_pose, args)
                         # A flight that ended while the arm was frozen/waiting never
                         # reaches the normal flight->idle logging below (last_state is
@@ -1174,11 +1477,19 @@ def main():
                             last_flight_logged = hh
                         attempted = False
                         refuse_logged = False
+                        servo_hold_logged = False
                         guard_reason = None
                         committed_target = None
                         reaim_count = 0
                         pred_window.clear()
                         last_state = "idle"
+                        # wait_for_fault_clear() has driven back to the wait pose with a
+                        # movej; only now is it safe to re-open the stream (see the
+                        # :30002-preempts-the-running-program invariant above).
+                        if servo_mode and not args.dry_run:
+                            print("    re-opening the servo stream...")
+                            start_servo_stream()
+                        emit_setpoint()
                         continue
 
                 with STATE_LOCK:
@@ -1191,6 +1502,7 @@ def main():
                 if target_id is None:
                     if candidate_ids:
                         print(f"Multiple rigid bodies {candidate_ids}; re-run with --rigid-body-id <id>.")
+                    emit_setpoint()
                     time.sleep(1.0 / args.poll_hz)
                     continue
 
@@ -1198,6 +1510,7 @@ def main():
                     print(f"--- throw detected (rigid body {target_id}) ---")
                     attempted = False
                     refuse_logged = False
+                    servo_hold_logged = False
                     committed_target = None
                     reaim_count = 0
                     pred_window.clear()
@@ -1276,10 +1589,41 @@ def main():
                                         target_pose=target_pose, speed=args.speed, accel=args.accel,
                                         move_kind=args.catch_move, yaw_follow=(not args.no_yaw_follow),
                                         stable=trusted is not None, dry_run=args.dry_run)
-                                if not args.dry_run:
+                                if servo_mode:
+                                    # No program send, no socket connect, no move to
+                                    # start - just a new destination for the stream
+                                    # that is already running. This is the whole point
+                                    # of servo mode: commit latency is one tick.
+                                    servo_target = np.array(commit_point, dtype=float)
+                                    servo_orient = orient
+                                elif not args.dry_run:
                                     send_script(catch_move_script(target_pose))
                                 committed_target = np.array(commit_point, dtype=float)
                                 attempted = True
+
+                        elif attempted and servo_mode and committed_target is not None:
+                            # Continuous retargeting - servo mode's replacement for the
+                            # whole re-aim mechanism. Re-aim existed because a discrete
+                            # move had to FINISH before another could sensibly start,
+                            # which on 2026-07-17 data meant it fired on 2 of 98
+                            # attempts (docs/debug_log.md 2026-07-18 section 2). Here
+                            # there is no move to finish: the setpoint simply follows
+                            # the refined prediction, every tick, for free. No drift
+                            # threshold, no count limit, no preemption question - those
+                            # were all artefacts of the discrete-move model.
+                            new_point = trusted if trusted is not None else result.catch_point_base
+                            env = check_catch_envelope(np.array(new_point), wait_xyz)
+                            if env is None:
+                                drift = float(np.linalg.norm(np.array(new_point) - committed_target))
+                                servo_target = np.array(new_point, dtype=float)
+                                servo_orient = target_orientation(np.array(new_point), result.impact_vel_base)
+                                committed_target = np.array(new_point, dtype=float)
+                                if drift >= args.reaim_min:
+                                    # Logged only on meaningful movement: at 125Hz an
+                                    # unconditional event per tick would bury the log.
+                                    rec.log("retarget", t=flight_buffer[-1].t, n=result.n_samples,
+                                            drift=drift, target=new_point,
+                                            t_impact=result.time_to_impact)
 
                         elif (attempted and not args.no_reaim and committed_target is not None
                               and reaim_count < args.reaim_max_count):
@@ -1346,6 +1690,7 @@ def main():
                     if history_head is not None and history_head is last_flight_logged:
                         # already logged by the post-fault capture above - don't double-log
                         last_state = state
+                        emit_setpoint()
                         time.sleep(1.0 / args.poll_hz)
                         continue
                     last_flight_logged = history_head
@@ -1382,7 +1727,21 @@ def main():
                     if history_head is not None and history_head.raw_samples:
                         rec.log("throw_samples", t=history_head.raw_samples[0].t,
                                 raw=[[s.t, s.x, s.y, s.z] for s in history_head.raw_samples])
-                    if attempted and not args.dry_run:
+                    if servo_mode:
+                        # Just re-aim the stream at the wait pose - no blocking movej,
+                        # so the loop stays live for the next throw while the arm is
+                        # still drifting home. Feasibility always reads the arm's ACTUAL
+                        # TCP, so a throw arriving mid-return is handled correctly rather
+                        # than against a stale "we are at the wait pose" assumption.
+                        servo_target = wait_xyz.copy()
+                        servo_orient = list(wait_pose[3:6])
+                        if attempted:
+                            rec.log("move", purpose="return_to_wait", target=wait_pose,
+                                    move_kind="servo", settled=None, fault=None)
+                            print("returning to wait pose (servo)...\n")
+                        else:
+                            print()  # never left the wait pose; nothing to announce
+                    elif attempted and not args.dry_run:
                         print("returning to wait pose...")
                         t0 = time.time()
                         settled, fault = move_to(wait_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
@@ -1400,6 +1759,9 @@ def main():
                         print()
 
                 last_state = state
+                # Last thing in the loop so the setpoint reflects the newest
+                # decision. Every `continue` above calls it too - see emit_setpoint().
+                emit_setpoint()
                 time.sleep(1.0 / args.poll_hz)
         except KeyboardInterrupt:
             stop_reason = "keyboard_interrupt"
@@ -1409,7 +1771,16 @@ def main():
                 print(f"session tally: {catches}/{attempts_ended} attempted throws caught "
                       f"(heuristic - ball last seen <{CAUGHT_LAST_SEEN_DIST_M*100:.0f}cm from tool)")
             rec.log("run_end", reason=stop_reason or "unknown",
-                    catches=catches, attempts_ended=attempts_ended)
+                    catches=catches, attempts_ended=attempts_ended,
+                    servo_setpoints_sent=(stream.sent if stream is not None else None))
+            # Stream down FIRST: stop() asks the robot to stopj and end its program,
+            # and the stopl below is a fresh script on :30002 that would otherwise
+            # preempt it mid-shutdown. Best-effort - if this raises, the robot's own
+            # read-timeout watchdog reaches the same state within --sock-timeout.
+            try:
+                stop_servo_stream(stop_reason or "unknown")
+            except Exception:
+                pass
             if not args.dry_run:
                 try:
                     send_script(stopl_script())

@@ -40,28 +40,19 @@ revised as we prototype.
 - Joint speed (official UR10e manual, SW5.22): base & shoulder max **120°/s**, elbow
   & all three wrists max **180°/s**. (An earlier version of this file said
   180°/360°/s — that was wrong, likely from a UR10-non-e or marketing sheet.)
-- **TCP speed: no fixed cap — it's joint-speed-limited and configuration-dependent.**
-  The datasheet's "Tool: approx. 1 m/s" is a *nominal/typical* number, not a hard
-  ceiling; the separate "4 m/s" figure is unloaded/freedrive mechanical capability, not
-  achievable via commanded moves. **Measured empirically 2026-07-14 with `speed_char.py`**
-  (which reads true *peak* TCP speed off `getActualTCPSpeed()`, not leg-average):
-  - Commanded speed is delivered **1:1 up to ~1.2 m/s** (achieved/commanded ratio
-    1.00–1.02), then rolls off; peak achieved was **~1.32 m/s** in the best
-    configuration along the test path.
-  - The ceiling **varies along the path**: the same commanded 1.4 m/s peaked 1.324 on a
-    0.75 m leg but only 1.204 on a longer 0.97 m leg — because the controller scales the
-    whole move down to keep the worst-case joint under its angular limit. So "the max
-    TCP speed" is a function of pose/direction, not a constant; expect a different number
-    on a different segment.
-  - **This supersedes the old "confirmed ~1 m/s" note.** That came from `ur_loop.py` leg
-    *timing*, i.e. *average* speed over a move including accel/decel ramps — always below
-    peak (e.g. a 0.97 m move commanded at 1.0 m/s took 1.30 s → 0.74 m/s average despite
-    a 1.005 m/s peak). Peak ≠ average; use `speed_char.py` for peak, timing/`ur_loop.py`
-    for the ramp-inclusive move times that actually gate catch feasibility.
-  - Accel: no clean published hard ceiling; `speed_char.py` pins `--accel 40` so accel
-    never bottlenecks (controller clamps it internally). Pushing `--accel` past ~2-4x the
-    commanded speed has diminishing returns (real minimum ramp time regardless).
-  - Full run + reconciliation with the docs: `docs/debug_log.md` (2026-07-14).
+- **TCP speed: no fixed cap — it's joint-speed-limited, configuration-dependent,
+  and varies by pose/direction** (not a single constant). The datasheet's "Tool:
+  approx. 1 m/s" is nominal, not a ceiling; the separate "4 m/s" figure is
+  unloaded/freedrive capability, not achievable via commanded moves. Measured
+  peak TCP speed (`speed_char.py`, reads true peak off `getActualTCPSpeed()`,
+  not leg-average): commanded speed delivered **1:1 up to ~1.2 m/s**, peak
+  achieved **~1.32 m/s** in the best configuration. Use `speed_char.py` for
+  peak speed; use `ur_loop.py`/leg timing for the ramp-inclusive *move times*
+  that actually gate catch feasibility (peak ≠ average — a leg can have a
+  1.3 m/s peak but a 0.74 m/s timed average). Accel: no published hard
+  ceiling; `speed_char.py` pins `--accel 40` so accel never bottlenecks —
+  pushing `--accel` past ~2-4x commanded speed has diminishing returns. Full
+  measurement + reconciliation with the datasheet: `docs/debug_log.md` 2026-07-14.
 - Footprint: Ø190 mm base, weighs 33.5 kg, IP54, PLd Category 3 safety functions
 - Control: URScript, RTDE for external streaming control, URCaps for extensions
 - **Catching implication**: TCP speed (~1.2 m/s reliably commanded, ~1.3 peak) is still
@@ -317,9 +308,9 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   the 120°/s base limit → C153A0. Measured on the 2026-07-16 sessions: fault rate vs
   target azimuth swing from the wait pose (accel≤4) was 0% <10°, 36% at 20–35°, 50%
   >35°. Lowering `--accel` never fixes this (it's a velocity-on-path violation, not
-  acceleration). `catch.py --catch-move movej` (+ `--yaw-follow`) is the designed fix —
-  a movej plans in joint space and cannot violate joint limits — pending real-arm
-  validation. See `docs/debug_log.md` 2026-07-17.
+  acceleration). `catch.py --catch-move movej` (+ `--yaw-follow`) is the fix — a
+  movej plans in joint space and cannot violate joint limits — validated on the
+  real arm and on by default (see Catch Integration). See `docs/debug_log.md` 2026-07-17.
 - **Home position is a singularity** — pendant jogging (and any move command) can
   throw a false "no IK solution" error there. Freedrive off home position first before
   assuming it's a real fault.
@@ -436,91 +427,65 @@ azimuth. Same incident class also spawned `check_release_guard()` (default on): 
 release originating <1.0m (horizontal) from the base, or moving >100° away from
 it, is logged as a `guard` event and never commits — thresholds set from all 161
 recorded real throws (release ≥1.1m p5, toward-robot angle ≤27° p90), which all
-pass. **Post-commit re-aim** (2026-07-17, default on, `--no-reaim`): commits fire
-at ~43 samples where prediction error is still 6–17cm (vs 2–5cm at 67–80 samples,
-measured on real throws); once the committed move has settled (never preempting
-motion) the loop keeps refitting and sends a short envelope-checked correction
-move when the refined prediction drifts ≥2cm and the time budget allows (≤3 per
-throw, `reaim` events in the JSONL). **2026-07-18 finding: the settle-first
-design is effectively dormant on real data** (2 firings in 98 attempts —
-travel time eats the window); `--reaim-preempt` (opt-in, unvalidated) lets a
-≥5cm drift interrupt the running move instead (leads with `stopj()`). `--catch-move movej` + `--yaw-follow` are
-the fix for the side-throw protective stops (see Key safety rules) — **both
-promoted to default-on 2026-07-17** after a first real session confirmed no
-new faults (`--catch-move movel` / `--no-yaw-follow` still available). Possible
-regression to watch: an unconfirmed operator impression that catch accuracy got
-slightly worse with movej on — see "movej accuracy" in Open Questions. `--poll-hz` default 50 (was 20 — poll interval is
-pure decision latency); console prints throttled, ticks all recorded. throw_end
-now logs a `caught_guess` (ball last seen <30cm from tool ⇒ swallowed by the box;
-matched session notes at ~91% on 2026-07-16 data) plus a live session tally, and
-faulted throws now get their `throw_end`/`throw_samples` logged post-fault-clear
-too (previously they were the one class with no trajectory in the log). `--dry-run`
-logs every decision with zero motion; confirmation prompt
-before the first move. Keep the heavy fit off the socket-recv thread (existing
-threading rule). **Must `set_tcp()` the calibrated `tcp_offset` at startup** — it's a
-controller-side runtime setting, not implied by the transform file or `movel()`, and
-does NOT reliably carry over from whatever a previous script set it to; a real
-2026-07-15 bug (see `docs/debug_log.md`) had `catch.py`/`catch_feasibility.py` silently
-commanding the *flange* to the funnel's calibrated target, undershooting every catch by
-the 12cm `tcp_offset` — ball hit the wrist, ~15cm short of the funnel. Fixed in both
-files; `track_rigid_body.py` already did this correctly.
+pass. **Post-commit re-aim** (default on, `--no-reaim`): once the committed
+move has settled (never preempting motion), the loop keeps refitting and sends
+a short envelope-checked correction move when the refined prediction drifts
+≥2cm and the time budget allows (≤3 per throw, `reaim` events in the JSONL).
+Found effectively dormant on real data (2 firings in 98 attempts — travel time
+eats the settle window); `--reaim-preempt` (opt-in, unvalidated) interrupts the
+running move on ≥5cm drift instead (leads with `stopj()`). `--catch-move movej`
++ `--yaw-follow` are the fix for the side-throw protective stops (see Key
+safety rules), on by default (`--catch-move movel` / `--no-yaw-follow` still
+available) — confirmed no catch-accuracy regression vs `movel`
+(`docs/debug_log.md` 2026-07-18 §3). `--poll-hz` default 50 (poll interval is
+pure decision latency); console prints throttled, ticks all recorded. `throw_end`
+logs a `caught_guess` (ball last seen <30cm from tool ⇒ swallowed by the box)
+plus a live session tally, and faulted throws also get their
+`throw_end`/`throw_samples` logged post-fault-clear. `--dry-run` logs every
+decision with zero motion; confirmation prompt before the first move. Keep the
+heavy fit off the socket-recv thread (existing threading rule). **Must
+`set_tcp()` the calibrated `tcp_offset` at startup** — it's a controller-side
+runtime setting, not implied by the transform file or `movel()`, and does NOT
+reliably carry over from whatever a previous script set it to (a missed
+`set_tcp()` once silently commanded the flange instead of the funnel,
+undershooting every catch by the offset — see `docs/debug_log.md` 2026-07-15).
+Current `tcp_offset` is `0.0725`m (box centroid), read from
+`T_base_from_mocap.json` at runtime — don't hardcode it. `track_rigid_body.py`
+also does this correctly.
 
 **Payload/CoG is set once via the pendant's Installation → Payload Estimation
-wizard, not by `catch.py`** (2026-07-16) — user decision, "it never changes."
-Unlike `tcp_offset` (which genuinely gets overwritten by other scripts, e.g.
-`calibrate_frames.py` during calibration, so `catch.py` must resend it every run),
-nothing else in this toolchain sets a different payload, and the pendant's value is
-saved in the installation file — no "prior script left the wrong value" hazard to
-guard against here. A wrong payload/CoG (previously the factory default: a
-symmetric point mass, mismatched with the real offset funnel) is the traced root
-cause of a recurring `C153A0`/`C157A0` base-joint protective stop — see
-`docs/debug_log.md` 2026-07-16. If it recurs, check the pendant value first before
-assuming this script's motion parameters are at fault. `check_safety_mode()` also
-now cross-checks the Dashboard Server (not `rtde_r.getSafetyMode()` alone), after
-that same investigation found the RTDE-based fault check lagging a real protective
-stop by ~9s in one session. Neither fix has been validated on the real arm yet —
-dry-run first.
+wizard, not by `catch.py`** — user decision, "it never changes." Unlike
+`tcp_offset` (overwritten by `calibrate_frames.py`, so `catch.py` must resend
+it every run), nothing else in this toolchain touches payload, so there's no
+"prior script left the wrong value" hazard here. A wrong payload/CoG (factory
+default: symmetric point mass, mismatched with the real offset funnel) was the
+traced root cause of a recurring `C153A0`/`C157A0` base-joint protective stop —
+see `docs/debug_log.md` 2026-07-16. If it recurs, check the pendant value
+before assuming this script's motion parameters are at fault.
+`check_safety_mode()` also cross-checks the Dashboard Server, not
+`rtde_r.getSafetyMode()` alone (that investigation found the RTDE-based check
+lagging a real protective stop by ~9s).
 
 **Run recording (`catch.py --record`)** — off by default; when passed, writes
-`catch_logs/catch_log_<timestamp>.jsonl` (dir auto-created) with one compact JSON object per line covering
-every feasibility tick, gate/commit/refuse decision, throw start/end, robot move, and
-(2026-07-16) the raw per-throw ball trajectory
-(`run_start`/`throw_start`/`tick`/`commit`/`refuse`/`throw_end`/`throw_samples`/`move`/`run_end`
-event types, see `Recorder`/`rnd()` in `catch.py`). `throw_samples` carries every
-`(t,x,y,z)` sample of that throw's flight — captured in `finalize_flight()`
-(`live_trajectory.py`) into `FlightRecord.raw_samples`, not read back out of
-`SharedState.flight_buffer` later, because that buffer is already reset to `[]` by
-the same function by the time any poll-loop consumer notices the state change. The
-point: **a session can now be researched later from `catch_logs/` alone, with no
-need to go back into Motive replay** — replay is still what you'd use for
-camera/marker-level debugging, not for "what did the ball actually do on throw N."
-Each line carries a 1-based
-`"throw"` ordinal — this is the intended key for "what happened on throw N": filter
-the log to `"throw":N` (`jq 'select(.throw==10)'` or plain grep) and cross-reference
-against the Nth throw in a Motive replay of the same session, counting in the same
-order. Lines also carry `t` (the raw NatNet/Motive sample timestamp) as a second,
-now-confirmed correlation key: verified live 2026-07-15 (raw NatNet capture across a
-replay loop boundary) that Motive's "play recording" re-streams each take's *original*
-per-frame `timestamp`/`frame_number` verbatim, looping back to the exact same starting
-value every cycle rather than rebasing to zero — frame_number and timestamp reset
-together, and the reset delta matched the take's own length to the millisecond. So
-within one continuous Motive session (no relaunch between the live `catch.py --record`
-run and the later replay), a JSONL line's `t` lines up exactly with the timestamp seen
-during replay, down to the sample — not just "same ordinal throw." `throw`-index
-counting remains the robust fallback if Motive was restarted in between (untested
-whether the timestamp epoch survives a relaunch). Every `tick` includes the predicted
-catch point, distance-
-to-go, move_time, time-to-impact and margin (i.e. the feasibility gate's own
-reasoning at that instant); `throw_end` includes the arm's actual TCP pose at that
-moment, so a committed catch's target can be diffed against where the tool actually
-ended up. **First real use, 2026-07-15**: recorded a 15-throw session; only 3 throws
-ever committed, even though several more logged `possible`/`catch` ticks that never
-turned into a `movel` — root-caused via the JSONL to the (since-removed)
-stability-window commit gate racing a shrinking time budget. Replaying the recorded
-ticks against the fixed rule raises commits to 10 of 15; see the "Commit rule" change
-above and `docs/debug_log.md` 2026-07-15 for the full tick-by-tick analysis (including
-one case, throw 12, where the new rule commits to a still-noisy prediction the old gate
-correctly rejected — a real tradeoff, not a pure win).
+`catch_logs/catch_log_<timestamp>.jsonl` (dir auto-created), one compact JSON
+object per line covering every feasibility tick, gate/commit/refuse decision,
+throw start/end, robot move, and the raw per-throw ball trajectory
+(`run_start`/`throw_start`/`tick`/`commit`/`refuse`/`throw_end`/`throw_samples`/
+`move`/`run_end` event types, see `Recorder`/`rnd()` in `catch.py`).
+`throw_samples` is captured in `finalize_flight()` (`live_trajectory.py`) into
+`FlightRecord.raw_samples`, not read back out of `SharedState.flight_buffer`
+later — that buffer is already reset to `[]` by the same function by the time
+any poll-loop consumer would notice. Each line carries a 1-based `"throw"`
+ordinal (filter with `jq 'select(.throw==N)'`) and `t`, the raw NatNet/Motive
+sample timestamp — within one continuous Motive session (no relaunch), a
+JSONL line's `t` lines up exactly with the timestamp seen on replay of the
+same session (confirmed 2026-07-15); throw-ordinal is the fallback across a
+relaunch. The point: a session can be researched later from `catch_logs/`
+alone, with no need to go back into Motive replay. `throw_end` includes the
+arm's actual TCP pose, so a committed catch's target can be diffed against
+where the tool ended up. See `docs/debug_log.md` 2026-07-15 for the
+tick-by-tick analysis that motivated the current commit rule (fire on the
+first qualifying tick, not a stability window).
 
 **Session wrap-up (`wrap_up_session()`, 2026-07-16, on by default — `--no-wrapup` to
 skip)**: once the NatNet/RTDE connections are fully torn down (deliberately outside
@@ -536,14 +501,14 @@ plus any flight-report zip triggered during it. Lands in
 every exit path, including Ctrl-C.
 
 **Recommended order (status as of 2026-07-20):**
-- (1) ✅ **frame registration + rigid bodies — DONE, recalibrated 2026-07-20.**
-  `calibrate_frames.py` + `frames.py` work; current default `T_base_from_mocap.json`
-  (25 samples, single-marker + tool-offset joint solve, **4.25 mm fit RMSE**, live
-  verify pass agreeing to **1.5–9mm**) supersedes the old 07-14 rigid-body calibration
-  (27.7mm, kept as `T_base_from_mocap_old.json`). `track_rigid_body.py` closes the
-  full spatial pipeline (mocap → transform → live motion, tool parks under a tracked
-  body) — this is the continuous form of step (3), and it validates the transform end to
-  end. **Reported working well.**
+- (1) ✅ **frame registration + rigid bodies — DONE.** `calibrate_frames.py` +
+  `frames.py` work; current `T_base_from_mocap.json` (single-marker +
+  tool-offset joint solve) is **4.25mm fit RMSE**, live-verified to **1.5–9mm**
+  across the workspace (old rigid-body calibration kept as
+  `T_base_from_mocap_old.json`, 27.7mm). `track_rigid_body.py` closes the full
+  spatial pipeline (mocap → transform → live motion) and validates the
+  transform end to end — reported working well. Recalibration history:
+  `docs/debug_log.md` 2026-07-20.
 - (2) 🔄 **latency/feasibility characterization — IN PROGRESS.** Speed ceiling measured
   (`speed_char.py`, see hardware section: 1:1 to ~1.2 m/s, ~1.3 peak, joint-limited).
   Still needed: the `distance→move_time` curve (the feasibility oracle) and one full
@@ -593,141 +558,30 @@ every exit path, including Ctrl-C.
   real trajectory prediction is driving the arm.
 - `ur_rtde`/External Control URCap root cause still open (deprioritized, not urgent —
   raw URScript-over-socket is a working fallback for now). See `docs/debug_log.md`.
-- ~~`--catch-move movej` accuracy~~ **RESOLVED 2026-07-18**: full-log analysis of all
-  2026-07-17 sessions found NO movej regression — caught-ball proximity was marginally
-  *tighter* under movej (9.9 vs 11.2cm median), catch rates and prediction errors don't
-  differ by move kind. The "felt worse" sessions were rim-out misses (prediction-side,
-  throw-dependent). movej stays the default. See `docs/debug_log.md` 2026-07-18 §3.
-- **`--reaim-preempt` and `--tilt-follow` need real-arm validation** (2026-07-18, both
+- **`--reaim-preempt` and `--tilt-follow` need real-arm validation** (both
   opt-in): preempt replaces a running move (validate at low speed, watch for protective
   stops at the preemption instant); tilt-follow needs an IK-reachability check near the
   envelope edge. Motivations + data: `docs/debug_log.md` 2026-07-18 §2/§4/§8.
 
 ## Status (2026-07-20)
-Real motion works (raw URScript-over-socket, 2026-07-10/11). Trajectory
-fitting/prediction works against recorded and live OptiTrack data.
+Real motion works (raw URScript-over-socket). Trajectory fitting/prediction
+works against recorded and live OptiTrack data. Spatial pipeline connected end
+to end: frame registration done (4.25mm fit RMSE — see Catch Integration step
+1), `track_rigid_body.py` continuously drives the arm to park under a tracked
+rigid body via `frames.py` — proven and reported working well. v2 servoj
+streaming transport also built and validated (`ur_servo.py`/
+`track_ball_servo.py`, see step 5).
 
-**Spatial pipeline connected end to end:** frame registration done
-(`calibrate_frames.py` → `T_base_from_mocap.json`, recalibrated 2026-07-20 to
-4.25mm fit RMSE — see "2026-07-20" below), and `track_rigid_body.py` continuously
-drives the arm to park under a tracked rigid body via `frames.py` — mocap →
-transform → live motion is proven and reported working well.
+**`catch.py` is catching real thrown balls.** Best measured rate: **81%**
+(75/93 committed throws, 2026-07-18 forensic pass over a 160-throw day). Most
+misses are rim hits (median prediction error ~13cm), not wild misses, so a
+wider/energy-absorbing mouth is currently the single biggest catch-rate lever.
+Current default operating point: `--catch-move movej --yaw-follow` (fixes
+side-throw protective stops — see Key safety rules), `--accel 4.0 --speed 1.2
+--approach-speed 1.5`, `--poll-hz 50`, `--rigid-body-id 3`, wait pose
+`(0.042, -0.716, 0.139, 1.584, -0.0824, -0.0573)`.
 
-**`catch.py` IS CATCHING REAL THROWN BALLS.** 2026-07-16 afternoon: 23 real
-sessions, 196 throws, 108 commits, an estimated **~91% catch rate on committed
-throws** (last-seen-near-tool heuristic vs session notes). Full quantitative
-analysis of those logs: `docs/debug_log.md` 2026-07-17. The recurring pain was
-protective stops on side throws — root-caused to movel base-joint speed violation
-(see Key safety rules), payload/CoG having fixed only the straight-ahead cases.
-Practical operating point found that day: `--accel 3.0–4.0`, `--speed 1.1–1.5`.
-
-**2026-07-17 night-shift pass on `catch.py`**: release guard + envelope azimuth
-band (kills the false-release/self-collision class), post-commit re-aim (default
-on — fixes the committed-target-is-noisy problem), `--catch-move movej`/
-`--yaw-follow`, `--poll-hz` 50, live catch/miss tally, faulted throws now logged.
-Details in "Catch Integration" and `docs/debug_log.md` 2026-07-17. Also that
-entry's negative result: do NOT constrain the trajectory fit to gravity —
-measured worse than the free quadratic on real throws.
-
-**All of the above promoted to defaults same day**, after a first real session
-confirmed them: `--catch-move movej` and `--yaw-follow` are now ON by default
-(`--no-yaw-follow` to disable; plain `movel` still available via
-`--catch-move movel`) — the fix for side-throw protective stops. New default
-operating point: `--accel 4.0 --speed 1.2 --approach-speed 1.5`, wait pose
-re-taught to `(0.042, -0.716, 0.139, 1.584, -0.0824, -0.0573)`, and
-`--rigid-body-id` now defaults to `3` (the standard ball-RB id once base/tool RBs
-are also in the scene — auto-select no longer reliable with 3 rigid bodies
-present). See the "movej accuracy" entry in Open Questions — an unconfirmed
-operator impression that catches got slightly less accurate with movej on.
-
-~~Loose end worth tightening before any smaller-than-box catch tool: calibration
-RMSE is 27.7 mm~~ **DONE 2026-07-20** — recalibrated to 4.25mm, see below.
-
-**2026-07-18 night shift — forensic pass on all 2026-07-17 logs + calibration
-root cause** (full numbers `docs/debug_log.md` 2026-07-18; analysis scripts in
-`analysis/`): day totals 160 throws, 98 commits, 75/93 caught (81%). Key
-findings: (1) misses are RIM HITS — 14/17 measurable misses put the ball
-within 13–21cm of the box center; true prediction error is median 13cm, i.e.
-the error budget lands balls on the rim — a wider/energy-absorbing mouth is
-the single biggest catch-rate lever (~91% would have been caught); (2) re-aim
-was found effectively DORMANT (2 firings/98 attempts — arm travel eats the
-settle window) — `--reaim-preempt` is the designed fix, opt-in, unvalidated;
-(3) movej accuracy question resolved, no regression (see Open Questions);
-(4) yaw-follow worked (up to 41° commanded) — no visible wrist motion is by
-design (wrist joints deliberately held still); `--tilt-follow DEG` (opt-in)
-gives functional, visible wrist action instead; (5) the single-marker
-calibration failure (80mm RMSE) was a stale/wrong TCP during `p_robot` reads
-(~10cm fixed flange-frame offset, provable from the data), NOT a mocap
-problem — `calibrate_frames.py` now records full TCP poses, jointly solves
-the marker's tool-frame offset (`frames.fit_transform_with_tool_offset`,
-default on), and wiggle-tests `set_tcp()` at startup, making marker placement
-precision irrelevant; redo the calibration with the new pipeline (expect
-≤27.7mm, likely much less — **confirmed 2026-07-20, see below**); (6) the
-after-lunch camera reconfig did NOT shift the mocap frame — the 07-14
-transform stayed valid all day.
-
-## 2026-07-20 — recalibration with the tool-offset joint solve, `verify_live()` bug found and fixed
-
-Redid the single-marker calibration with the (already-implemented but not yet
-live-tested) `fit_transform_with_tool_offset` pipeline: `python3
-calibrate_frames.py --unlabeled-marker`, 25 samples. Plain rigid fit was 84.91mm
-(expected — the marker sits ~1cm from the flange, nowhere near the configured
-12cm box-centroid `--tcp-offset`), but the **tool-offset joint solve landed at
-4.25mm RMSE**, solving the marker's tool-frame offset at `d ≈ (0, 1, -92)mm` —
-confirming the feature works as designed (this is the same mechanism that fixed
-the 2026-07-17 80mm marker-calibration failure, now validated on new data, not
-just the synthetic self-test). Promoted to the new default: old `T_base_from_mocap.json`
-(07-14, rigid-body, 27.7mm) renamed to `T_base_from_mocap_old.json`; the new
-25-sample marker calibration is now `T_base_from_mocap.json`. Every script that
-reads the default filename (`catch.py`, `catch_feasibility.py`,
-`track_rigid_body.py`) picks this up automatically — no code changes needed
-there. Its `tcp_offset` field was the 12cm box-centroid offset the calibration
-run happened to have configured (calibration always sends the *configured*
-`--tcp-offset`, independent of where the physical marker actually was — that
-decoupling is the whole point of the joint solve); **since superseded, see
-below — a smaller box went on the same day and the field was updated to
-match.**
-
-**Box swapped to a smaller one, same day**: a new 15.5(w) x 14.5(d) cm box
-replaced the earlier 30x23x24cm one, flush-mounted the same way (centered on
-the depth-wise back face) → geometric center now sits **7.25cm** out along
-flange Z (was 12cm). `T_base_from_mocap.json`'s `tcp_offset` field was updated
-in place to `[0,0,0.0725,0,0,0]` (R/t untouched — the mocap→base transform
-doesn't depend on which tool is attached, only `tcp_offset`, the "what point
-to `set_tcp()` to" metadata, does) — `catch.py`/`catch_feasibility.py`/
-`track_rigid_body.py` need no changes, they all read this field at runtime.
-`calibrate_frames.py`'s `TCP_OFFSET` default (and `--tcp-offset` help text)
-updated to `0.0725` to match for any future from-scratch calibration.
-
-**Found and fixed a real bug in `verify_live()`** (the live predicted-vs-actual
-sanity check calibrate_frames.py runs at the end): it compared the joint-solve's
-`R, t` prediction — which is the tracked *marker's* base-frame position
-(`p_tcp + R_tool @ d`) — directly against the raw TCP pose, with no correction
-for `d`. Since `d` is real and ~92mm here, this manifested as a spurious ~92.6mm
-"error" during verification even though the fit itself was 4.25mm RMSE
-(`norm(d)=92.4mm` matches the observed 92.6mm to 0.2mm — confirmed root cause,
-not coincidence). Not a regression from a later edit — checked via `git diff`:
-`verify_live()` was never touched when the tool-offset feature was added, so
-this was a pre-existing gap in the original implementation, not a case of one
-model changing code another model relied on. Fixed: `verify_live()` now takes
-`d` and adds `R_tool_current @ d` onto the actual TCP pose before comparing.
-Also slowed its print loop from 10Hz to 2Hz — each `\r`-updated line still lands
-as a separate entry in terminal scrollback (only the on-screen line was
-overwritten), flooding history on a normal multi-second verify run.
-
-**Post-fix live verification**: predicted vs actual agreed to **1.5–5mm** through
-most of the workspace, **8–9mm** on the side opposite the throwing direction —
-a real, if modest, calibration-quality dropoff there (extrapolation beyond the
-sampled poses is the likely cause) but still well under the old 27.7mm baseline
-everywhere tested.
-
-**v2 streaming works.** `ur_servo.py` + `track_ball_servo.py` (2026-07-20):
-continuous `servoj` setpoint streaming over a reverse socket, validated on the
-real arm on the first try — `--bench` measured **2473 setpoints, 0 late ticks,
-3.1mm lag at 125Hz**, and `track_ball_servo.py` follows a hand-moved ball
-"very responsively". This is the architectural unlock for step (5): there is no
-longer a discrete move that must *finish* before the arm can be retargeted,
-which is what made the post-commit re-aim dormant (2 firings in 98 attempts).
-What remains is driving the stream from a **predicted intercept** instead of the
-ball's current position. Full write-up, including the three URScript gotchas
-that would each have caused a real incident, in `docs/debug_log.md` 2026-07-20.
+Full session-by-session history (release guard, re-aim, movej/yaw-follow
+rollout, the calibration root-cause chase, box swap, v2 streaming validation)
+is in `docs/debug_log.md`, dated 2026-07-16 through 2026-07-20 — consult it
+for the "why" behind any of the current defaults above.
