@@ -562,6 +562,14 @@ every exit path, including Ctrl-C.
   opt-in): preempt replaces a running move (validate at low speed, watch for protective
   stops at the preemption instant); tilt-follow needs an IK-reachability check near the
   envelope edge. Motivations + data: `docs/debug_log.md` 2026-07-18 §2/§4/§8.
+- **TODO: `ur_servo.py --self-test` is currently failing** — the multi-seed simulated
+  session (part 6) measures acceleration spikes of ~25-108 m/s² against caps of 2-4
+  m/s², at ordinary mid-workspace points, not near the r≈0 singularity the surrounding
+  code comments discuss. Reproduces at both the old (0.6/2.0) and current (1.2/4.0)
+  `--servo-max-speed`/`--servo-max-accel` values (2026-07-21). Root cause not yet
+  found — likely in the accel-search/geometric-term interaction in `RateLimiter.step()`.
+  Needs fixing and a clean self-test before trusting `--catch-move servo` output,
+  though real-arm protective stops remain a backstop in the meantime.
 
 ## Status (2026-07-20)
 Real motion works (raw URScript-over-socket). Trajectory fitting/prediction

@@ -913,16 +913,19 @@ def main():
                              "see the --servo-* flags.")
 
     # Servo streaming (--catch-move servo) ----------------------------------------
-    parser.add_argument("--servo-max-speed", type=float, default=0.6,
-                        help="m/s cap for the servo setpoint stream (default 0.6, half the arm's usable "
-                             "ceiling, chosen for the first validation session - raise once logs look "
-                             "clean). This is enforced host-side by ur_servo.RateLimiter, NOT by servoj, "
-                             "which has no speed limit of its own.")
-    parser.add_argument("--servo-max-accel", type=float, default=2.0,
-                        help="m/s^2 cap for the servo setpoint stream (default 2.0). Also sets the "
+    parser.add_argument("--servo-max-speed", type=float, default=1.2,
+                        help="m/s cap for the servo setpoint stream (default 1.2, raised 2026-07-21 from "
+                             "the original half-ceiling 0.6 m/s first-validation value to match the "
+                             "movel/movej operating point --speed 1.2 - the same reliably-commandable "
+                             "ceiling speed_char.py measured, see CLAUDE.md hardware section). This is "
+                             "enforced host-side by ur_servo.RateLimiter, NOT by servoj, which has no "
+                             "speed limit of its own.")
+    parser.add_argument("--servo-max-accel", type=float, default=4.0,
+                        help="m/s^2 cap for the servo setpoint stream (default 4.0, raised 2026-07-21 "
+                             "from 2.0 to match --accel's movel/movej operating point). Also sets the "
                              "deceleration-aware approach: commanded speed never exceeds "
                              "sqrt(2*a*distance_remaining), so the setpoint cannot overshoot the "
-                             "intercept (an undamped limiter would overshoot by v^2/2a = 9cm here).")
+                             "intercept.")
     parser.add_argument("--servo-base-rate-deg-s", type=float, default=SERVO_BASE_RATE_DEG_S,
                         help=f"deg/s cap on the base joint implied by lateral setpoint motion (default "
                              f"{SERVO_BASE_RATE_DEG_S}). This is the servo-mode replacement for movej's "
