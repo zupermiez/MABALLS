@@ -30,6 +30,10 @@ Design (per CLAUDE.md "Catch Integration"):
     opportunity, not improving it. Still prefers the --stability-window average as the
     commit TARGET POINT when it's already available (free noise reduction - pred_window
     fills regardless of this gate), it just never blocks the commit DECISION on it.
+    --catch-move servo is a further exception (2026-07-22): it commits at
+    --early-commit-samples (default 5, not --commit-samples' 40) with the feasibility
+    gate bypassed entirely, since its continuous retargeting corrects the noisy early
+    guess every tick afterward - see --early-commit-samples' help for the reasoning.
 
 SAFETY. A catch move is inherently larger than ur_goto_raw.py's 0.15m/axis clamp,
 so this script does NOT reuse that clamp or spam --force. Instead every commanded
@@ -69,6 +73,7 @@ import time
 from collections import deque
 from typing import List, Optional
 
+import beep
 import dashboard_client
 import numpy as np
 import rtde_receive
@@ -80,9 +85,10 @@ from frames import mocap_point_to_base
 from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script, movej_to_pose_script
 from calibrate_frames import send_urscript, set_tcp_script
 from ur_servo import (
-    RateLimiter, ServoStream, HOST_IP as SERVO_HOST_IP, HOST_PORT as SERVO_HOST_PORT,
-    DEFAULT_GAIN as SERVO_DEFAULT_GAIN, DEFAULT_LOOKAHEAD as SERVO_DEFAULT_LOOKAHEAD,
-    DEFAULT_SERVO_DT, DEFAULT_SOCK_TIMEOUT, DEFAULT_STOP_ACCEL,
+    RateLimiter, OrientationRateLimiter, ServoStream, HOST_IP as SERVO_HOST_IP,
+    HOST_PORT as SERVO_HOST_PORT, DEFAULT_GAIN as SERVO_DEFAULT_GAIN,
+    DEFAULT_LOOKAHEAD as SERVO_DEFAULT_LOOKAHEAD, DEFAULT_SERVO_DT, DEFAULT_SOCK_TIMEOUT,
+    DEFAULT_STOP_ACCEL, rotvec_to_quat, quat_to_rotvec, quat_multiply,
 )
 from catch_feasibility import (
     MoveTimeModel, fit_move_time_model, latest_speed_char_json, load_transform,
@@ -272,39 +278,9 @@ def stopl_script(decel: float = 3.0) -> str:
 # --- Small quaternion helpers for --yaw-follow (rotate the wait orientation about
 # base Z by the target's azimuth delta). Quaternion-based on purpose: direct
 # axis-angle composition via rotation matrices needs the fragile theta~pi
-# edge case handled; quaternions don't. Only used to compose one yaw with one
-# fixed orientation, so no need for scipy. ---
-
-def _rotvec_to_quat(rv):
-    rv = np.asarray(rv, dtype=float)
-    theta = float(np.linalg.norm(rv))
-    if theta < 1e-12:
-        return np.array([1.0, 0.0, 0.0, 0.0])
-    axis = rv / theta
-    return np.concatenate([[math.cos(theta / 2)], axis * math.sin(theta / 2)])
-
-
-def _quat_multiply(q1, q2):
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    return np.array([
-        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-    ])
-
-
-def _quat_to_rotvec(q):
-    w, v = q[0], np.asarray(q[1:], dtype=float)
-    n = float(np.linalg.norm(v))
-    if n < 1e-12:
-        return np.zeros(3)
-    theta = 2.0 * math.atan2(n, w)
-    if theta > math.pi:
-        theta -= 2.0 * math.pi
-    return (v / n) * theta
-
+# edge case handled; quaternions don't. Helpers (rotvec_to_quat etc.) live in
+# ur_servo.py, imported above - OrientationRateLimiter needs the same math,
+# not duplicated here anymore. ---
 
 def yaw_follow_orientation(wait_pose: List[float], wait_xyz: np.ndarray,
                            target_xyz: np.ndarray) -> List[float]:
@@ -322,8 +298,8 @@ def yaw_follow_orientation(wait_pose: List[float], wait_xyz: np.ndarray,
     az_tgt = math.atan2(float(target_xyz[1]), float(target_xyz[0]))
     d_az = math.atan2(math.sin(az_tgt - az_wait), math.cos(az_tgt - az_wait))
     q_yaw = np.array([math.cos(d_az / 2), 0.0, 0.0, math.sin(d_az / 2)])
-    q_wait = _rotvec_to_quat(wait_pose[3:6])
-    rv = _quat_to_rotvec(_quat_multiply(q_yaw, q_wait))
+    q_wait = rotvec_to_quat(wait_pose[3:6])
+    rv = quat_to_rotvec(quat_multiply(q_yaw, q_wait))
     return [float(rv[0]), float(rv[1]), float(rv[2])]
 
 
@@ -355,8 +331,8 @@ def tilt_follow_orientation(base_rv: List[float], impact_vel_base: np.ndarray,
         return list(base_rv)             # ball falling straight down - mouth-up already ideal
     angle = min(full, max_tilt_rad)
     q_tilt = np.concatenate([[math.cos(angle / 2)], (axis / an) * math.sin(angle / 2)])
-    q_base = _rotvec_to_quat(base_rv)
-    rv = _quat_to_rotvec(_quat_multiply(q_tilt, q_base))
+    q_base = rotvec_to_quat(base_rv)
+    rv = quat_to_rotvec(quat_multiply(q_tilt, q_base))
     return [float(rv[0]), float(rv[1]), float(rv[2])]
 
 
@@ -932,6 +908,23 @@ def main():
                              f"structural immunity to the side-throw C153A0 fault - servoj does NOT get "
                              f"that for free. Only the tangential component is capped; radial and "
                              f"vertical motion don't load the base joint.")
+    parser.add_argument("--servo-orient-max-rate-deg-s", type=float, default=None,
+                        help="deg/s cap on the streamed ORIENTATION (yaw-follow/tilt-follow), via "
+                             "ur_servo.OrientationRateLimiter (default: same as --servo-base-rate-deg-s). "
+                             "Added 2026-07-22: servo_orient used to be sent completely unrate-limited "
+                             "alongside a rate-limited position - on commit it could snap the whole "
+                             "wait-pose->target yaw delta (up to +/-75deg) in one tick. yaw_follow_orientation "
+                             "rotates about base Z by design (keeps the wrist still), so that snap landed "
+                             "almost entirely on the BASE joint - suspected root cause of both the "
+                             "'oscillating to come to a stop' behavior and the base-joint accel-limit "
+                             "protective stops seen in real 2026-07-21/22 sessions, neither fixed by tuning "
+                             "--servo-max-speed/-accel since those never touched this channel. Defaults to "
+                             "the same budget as --servo-base-rate-deg-s since yaw-follow's rotation and "
+                             "position's azimuthal sweep are largely redundant descriptions of the same "
+                             "base-joint motion, not independent - see OrientationRateLimiter for the math.")
+    parser.add_argument("--servo-orient-max-accel-deg-s2", type=float, default=None,
+                        help="deg/s^2 cap for the orientation stream (default: rate/0.15, same 'full rate "
+                             "in 0.15s' convention as --servo-base-rate-deg-s's implicit accel)")
     parser.add_argument("--servo-rate", type=float, default=125.0,
                         help="Hz setpoint send rate in servo mode (default 125, the rate validated by "
                              "ur_servo.py --bench at 0 late ticks). Also becomes the default --poll-hz.")
@@ -945,6 +938,17 @@ def main():
                              "setpoint stream (not the mocap-subnet --local-ip)")
     parser.add_argument("--servo-host-port", type=int, default=SERVO_HOST_PORT,
                         help="Host-side TCP port the robot connects back to")
+    parser.add_argument("--servo-freeze-dist", type=float, default=0.03,
+                        help="m (default 0.03): once the arm is within this distance of the current "
+                             "servo target, a still-converging prediction was found repeatedly nudging "
+                             "the setpoint in small corrective reversals right through the settle phase - "
+                             "the real servoj tracking lag this builds up (measured ~80mm) coincided with "
+                             "4-5 real C153A0 protective stops in one 2026-07-21 session, all at exactly "
+                             "this finish phase. Below this distance, a retarget is only accepted if it "
+                             "clears --reaim-min (same 'meaningful movement' bar used for logging) - "
+                             "otherwise the last commit is held so the arm can actually settle. Does not "
+                             "touch the catch envelope/reach check, so full reach is unaffected - this "
+                             "only governs when the last few cm of fine retargeting happen.")
     parser.add_argument("--catch-joint-speed", type=float, default=2.0,
                         help="rad/s leading-joint speed for --catch-move movej (default 2.0 ~ 115deg/s, "
                              "just under the 120deg/s base/shoulder limit)")
@@ -1017,7 +1021,19 @@ def main():
 
     # Commit / trust --------------------------------------------------------------
     parser.add_argument("--commit-samples", type=int, default=40,
-                        help="min flight samples before a real catch may be fired (default 40, was 50 ~ 0.33s @120Hz)")
+                        help="min flight samples before a real catch may be fired (default 40, was 50 ~ 0.33s @120Hz). "
+                             "Ignored in --catch-move servo - see --early-commit-samples.")
+    parser.add_argument("--early-commit-samples", type=int, default=5,
+                        help="servo mode ONLY (2026-07-22): min flight samples before the stream starts "
+                             "driving toward the predicted intercept (default 5, vs --commit-samples' 40 for "
+                             "movel/movej). Also drops the feasible-or-possible gate for this first move - it "
+                             "fires as soon as a plane crossing exists and clears the envelope/release-guard "
+                             "checks, same as any other tick. Safe only because servo mode's existing "
+                             "continuous retargeting (every tick, unconditional on feasibility - see the "
+                             "'attempted and servo_mode' branch below) keeps pulling the noisy early guess "
+                             "toward the true intercept as more samples arrive; movel/movej have no such "
+                             "correction and must keep waiting for --commit-samples instead. Must be >=3 "
+                             "(fit_trajectory's hard floor).")
     parser.add_argument("--stability-window", type=int, default=3,
                         help="when this many recent catch-point predictions already agree within "
                              "--drift-tol, their average is used as the commit TARGET POINT (free "
@@ -1048,9 +1064,23 @@ def main():
     parser.add_argument("--robot-ip", default=ROBOT_IP, help="UR12e controller IP")
     parser.add_argument("--no-wrapup", action="store_true",
                         help="Skip the end-of-session name/description prompt and robot log pull")
+    parser.add_argument("--no-beep", action="store_true",
+                        help="Disable audio cues for predict/reaim/catch/miss events")
     args = parser.parse_args()
 
     servo_mode = args.catch_move == "servo"
+    if servo_mode and args.early_commit_samples < 3:
+        raise SystemExit(f"--early-commit-samples must be >=3 (fit_trajectory needs 3 points), "
+                          f"got {args.early_commit_samples}")
+    # Effective sample floor for both "start evaluating" (replaces MIN_SAMPLES_FOR_CHECK)
+    # and "may commit" (replaces --commit-samples) - servo mode uses its own much lower
+    # floor since it alone can correct a noisy early guess every tick afterward.
+    commit_samples_eff = args.early_commit_samples if servo_mode else args.commit_samples
+    min_check_samples = commit_samples_eff if servo_mode else MIN_SAMPLES_FOR_CHECK
+    if args.servo_orient_max_rate_deg_s is None:
+        args.servo_orient_max_rate_deg_s = args.servo_base_rate_deg_s
+    if args.servo_orient_max_accel_deg_s2 is None:
+        args.servo_orient_max_accel_deg_s2 = args.servo_orient_max_rate_deg_s / 0.15
     if args.poll_hz is None:
         # In servo mode this loop IS the setpoint stream, so it must run at the
         # servo rate; otherwise keep the long-standing 50Hz default.
@@ -1141,7 +1171,8 @@ def main():
           f"azimuth +/-{CATCH_MAX_AZIMUTH_DEG:.0f}deg of wait pose  (no cap on distance from wait pose)")
     if servo_mode:
         print(f"catch SERVO STREAM [EXPERIMENTAL]: v<={args.servo_max_speed} m/s a<={args.servo_max_accel} m/s^2 "
-              f"base<={args.servo_base_rate_deg_s:.0f} deg/s")
+              f"base<={args.servo_base_rate_deg_s:.0f} deg/s   |   orient<={args.servo_orient_max_rate_deg_s:.0f} "
+              f"deg/s a<={args.servo_orient_max_accel_deg_s2:.0f} deg/s^2")
         print(f"  stream: {args.servo_rate:.0f}Hz setpoints -> {args.servo_host_ip}:{args.servo_host_port}, "
               f"servoj gain={args.servo_gain:.0f} lookahead={args.servo_lookahead}   |   "
               f"approach movej: v={args.approach_speed} rad/s a={args.approach_accel} rad/s^2")
@@ -1162,9 +1193,14 @@ def main():
           f"tilt-follow: {('%.0fdeg [EXPERIMENTAL]' % args.tilt_follow) if args.tilt_follow > 0 else 'off'}   "
           f"re-aim: {reaim_desc}"
           f"   release guard: dist>={args.min_release_dist}m, away<={args.max_away_deg:.0f}deg")
-    print(f"commit: n>={args.commit_samples} AND (feasible OR possibly-catch) - fires on the FIRST "
-          f"qualifying tick; uses the last {args.stability_window}-prediction average (agreeing within "
-          f"{args.drift_tol}m) as the target point when already available, else the raw current prediction")
+    if servo_mode:
+        print(f"commit: n>={commit_samples_eff} AND a plane crossing exists (feasibility gate BYPASSED - "
+              f"--early-commit-samples) - fires on the FIRST qualifying tick; continuous retargeting then "
+              f"pulls the noisy early guess toward the true intercept every tick")
+    else:
+        print(f"commit: n>={commit_samples_eff} AND (feasible OR possibly-catch) - fires on the FIRST "
+              f"qualifying tick; uses the last {args.stability_window}-prediction average (agreeing within "
+              f"{args.drift_tol}m) as the target point when already available, else the raw current prediction")
     if frac < 0.99:
         print(f"WARNING: pendant speed slider at {frac*100:.0f}% - catch moves will be capped there.")
     print("=" * 78)
@@ -1188,12 +1224,16 @@ def main():
             tilt_follow_deg=args.tilt_follow,
             min_release_dist=args.min_release_dist, max_away_deg=args.max_away_deg,
             approach_speed=args.approach_speed, approach_accel=args.approach_accel,
-            commit_samples=args.commit_samples, stability_window=args.stability_window,
+            commit_samples=args.commit_samples, early_commit_samples=args.early_commit_samples,
+            commit_samples_eff=commit_samples_eff, stability_window=args.stability_window,
             drift_tol=args.drift_tol, margin=args.margin, box_radius=args.box_radius,
             cruise_speed=args.cruise_speed, poll_hz=args.poll_hz,
             servo=({"max_speed": args.servo_max_speed, "max_accel": args.servo_max_accel,
                     "base_rate_deg_s": args.servo_base_rate_deg_s, "rate": args.servo_rate,
                     "gain": args.servo_gain, "lookahead": args.servo_lookahead,
+                    "freeze_dist": args.servo_freeze_dist,
+                    "orient_max_rate_deg_s": args.servo_orient_max_rate_deg_s,
+                    "orient_max_accel_deg_s2": args.servo_orient_max_accel_deg_s2,
                     "host": f"{args.servo_host_ip}:{args.servo_host_port}"} if servo_mode else None))
 
     if not args.dry_run:
@@ -1237,23 +1277,25 @@ def main():
     # invariant.
     stream: Optional[ServoStream] = None
     limiter: Optional[RateLimiter] = None
+    orient_limiter: Optional[OrientationRateLimiter] = None
     servo_dt = 1.0 / args.poll_hz
     servo_target = wait_xyz.copy()          # base-frame xyz the stream is driving toward
-    servo_orient = list(wait_pose[3:6])     # orientation sent with every setpoint
+    servo_orient = list(wait_pose[3:6])     # orientation the stream is driving toward
     last_tick_mono = None                   # monotonic time of the previous emission
     last_servo_logged = None                # last servo_cmd position written to the log
     # Declared HERE, above start_servo_stream(), not down with the loop's other
     # counters: that helper assigns both, and it runs before the loop-state block.
 
     def start_servo_stream():
-        """(Re)open the stream and seed the limiter from where the arm actually is.
+        """(Re)open the stream and seed both limiters from where the arm actually is.
 
         Seeding from the measured pose rather than the wait pose matters on the
         restart-after-fault path: the arm may be anywhere, and a limiter seeded at
         a stale position would make its first step a jump rather than a bounded
-        crawl - defeating the one layer that makes streaming safe at all.
+        crawl - defeating the one layer that makes streaming safe at all. Same
+        reasoning applies to orientation (OrientationRateLimiter), added 2026-07-22.
         """
-        nonlocal stream, limiter, servo_target, servo_orient, last_tick_mono, last_servo_logged
+        nonlocal stream, limiter, orient_limiter, servo_target, servo_orient, last_tick_mono, last_servo_logged
         st = ServoStream(tcp_offset, args.robot_ip, args.servo_host_ip, args.servo_host_port,
                          DEFAULT_SERVO_DT, args.servo_lookahead, args.servo_gain,
                          DEFAULT_STOP_ACCEL, DEFAULT_SOCK_TIMEOUT)
@@ -1264,6 +1306,8 @@ def main():
                               args.servo_max_speed, args.servo_max_accel,
                               math.radians(args.servo_base_rate_deg_s),
                               reach_bounds=reach_band_at_z, z_bounds=(CATCH_Z_MIN, CATCH_Z_MAX))
+        orient_limiter = OrientationRateLimiter(here[3:6], math.radians(args.servo_orient_max_rate_deg_s),
+                                                math.radians(args.servo_orient_max_accel_deg_s2))
         servo_target = wait_xyz.copy()
         servo_orient = list(wait_pose[3:6])
         last_tick_mono = None
@@ -1271,12 +1315,13 @@ def main():
         rec.log("servo_stream", state="up", seeded_at=here[:3])
 
     def stop_servo_stream(reason: str):
-        nonlocal stream, limiter
+        nonlocal stream, limiter, orient_limiter
         if stream is not None:
             stream.stop()
             rec.log("servo_stream", state="down", reason=reason, sent=stream.sent)
             stream = None
             limiter = None
+            orient_limiter = None
 
     def emit_setpoint():
         """Send exactly one setpoint. Must run on EVERY loop iteration.
@@ -1311,6 +1356,11 @@ def main():
         # acceleration guarantee: 60+ m/s^2 measured against a 2.0 cap. Nothing
         # touches limiter's internal state from outside.
         cmd_xyz = limiter.step(servo_target, dt_eff)
+        # Orientation rate-limited the same way position is (2026-07-22, fixing the
+        # bug documented at length in OrientationRateLimiter's class docstring -
+        # servo_orient used to be sent raw here, which could snap the whole
+        # wait-pose->commit yaw delta onto the base joint in one tick).
+        cmd_orient = list(orient_limiter.step(servo_orient, dt_eff))
         # Independent backstop on what is actually about to be sent, so a limiter
         # bug or a bad seed cannot slip past both this and the target checks
         # upstream. One degree of azimuth slack: the commit gate upstream is the
@@ -1322,12 +1372,20 @@ def main():
             # stream is None in --dry-run: the limiter, clamp and envelope check all
             # still run (so a replay session validates exactly the setpoint path a
             # live run would take), only the send is skipped.
-            alive = stream.send(list(cmd_xyz) + servo_orient, servo=True) if stream else True
+            alive = stream.send(list(cmd_xyz) + cmd_orient, servo=True) if stream else True
         else:
-            here_xyz = np.array(rtde_r.getActualTCPPose()[:3])
+            here_pose = list(rtde_r.getActualTCPPose())
+            here_xyz = np.array(here_pose[:3])
             limiter.reset(here_xyz)
             servo_target = here_xyz.copy()
-            alive = stream.send(list(here_xyz) + servo_orient, servo=False) if stream else True
+            # Freeze orientation at its actual current value too, same reasoning as
+            # the position freeze just above - otherwise orientation would keep
+            # advancing toward servo_orient while position is stuck on an envelope
+            # hold, desyncing the two the same coupling problem this class exists
+            # to avoid.
+            orient_limiter.reset(here_pose[3:6])
+            cmd_orient = here_pose[3:6]
+            alive = stream.send(here_pose[:3] + cmd_orient, servo=False) if stream else True
             if not servo_hold_logged:
                 print(f"    >> SERVO HOLD (envelope): {env}")
                 servo_hold_logged = True
@@ -1338,8 +1396,8 @@ def main():
         # what you want to reconstruct afterwards) and goes quiet at the wait pose,
         # instead of emitting 125 near-identical lines a second all session.
         if last_servo_logged is None or float(np.linalg.norm(cmd_xyz - last_servo_logged)) >= 0.005:
-            rec.log("servo_cmd", cmd=cmd_xyz, target=servo_target, dt=dt_eff,
-                    actual=list(rtde_r.getActualTCPPose()[:3]))
+            rec.log("servo_cmd", cmd=cmd_xyz, target=servo_target, cmd_orient=cmd_orient,
+                    target_orient=servo_orient, dt=dt_eff, actual=list(rtde_r.getActualTCPPose()[:3]))
             last_servo_logged = cmd_xyz.copy()
         if not alive:
             # The far end went away without the safety check having noticed yet
@@ -1356,14 +1414,17 @@ def main():
         start_servo_stream()
         print("stream up - the arm is now holding the wait pose under servoj.\n")
     elif servo_mode:
-        # Dry-run: build the limiter but no stream. emit_setpoint() then runs the
+        # Dry-run: build both limiters but no stream. emit_setpoint() then runs the
         # whole setpoint path - rate limit, envelope clamp, envelope gate, logging -
         # and only skips the send, so a Motive replay validates exactly what a live
         # run would command without the arm moving at all.
-        limiter = RateLimiter(clamp_to_envelope(np.array(rtde_r.getActualTCPPose()[:3])),
+        dry_run_pose = list(rtde_r.getActualTCPPose())
+        limiter = RateLimiter(clamp_to_envelope(np.array(dry_run_pose[:3])),
                               args.servo_max_speed, args.servo_max_accel,
                               math.radians(args.servo_base_rate_deg_s),
                               reach_bounds=reach_band_at_z, z_bounds=(CATCH_Z_MIN, CATCH_Z_MAX))
+        orient_limiter = OrientationRateLimiter(dry_run_pose[3:6], math.radians(args.servo_orient_max_rate_deg_s),
+                                                math.radians(args.servo_orient_max_accel_deg_s2))
         print("[dry-run] servo setpoint path active (limiter + envelope), nothing sent.\n")
 
     # --- state ---
@@ -1529,7 +1590,7 @@ def main():
                         rec.log("guard", t=flight_buffer[-1].t if flight_buffer else None,
                                 reason=guard_reason)
 
-                if state == "flight" and guard_reason is None and len(flight_buffer) >= MIN_SAMPLES_FOR_CHECK:
+                if state == "flight" and guard_reason is None and len(flight_buffer) >= min_check_samples:
                     current_tcp_xyz = np.array(rtde_r.getActualTCPPose()[:3])  # RTDE FK only - never mocap
                     result = check_feasibility(
                         flight_buffer, catch_axis_idx, catch_value, R, t_vec, current_tcp_xyz,
@@ -1559,6 +1620,13 @@ def main():
                         # The early commit's target IS noisy (6-17cm at ~43 samples vs 2-5cm
                         # at 67-80) - that's what the post-commit re-aim below repairs, from
                         # rest, once better data exists.
+                        # Servo mode (2026-07-22): commit_samples_eff is --early-commit-samples
+                        # (default 5), not --commit-samples, AND `gate` is bypassed below (`or
+                        # servo_mode`) - the first move fires on any valid plane crossing that
+                        # clears the envelope/release-guard, trusting the continuous retarget
+                        # branch further down (attempted and servo_mode) to pull a noisy 5-sample
+                        # guess toward the true intercept every tick after. movel/movej have no
+                        # such correction, so they still wait for the full gate + 40 samples.
                         commit_point = trusted if trusted is not None else result.catch_point_base
                         rec.log("tick", t=flight_buffer[-1].t, n=result.n_samples,
                                 verdict=_verdict(result), reach=result.reach, from_tcp=current_tcp_xyz,
@@ -1567,9 +1635,9 @@ def main():
                                 margin=result.margin, shortfall=result.shortfall,
                                 stable=trusted is not None, trusted_point=trusted,
                                 post_commit=attempted,
-                                commit_ready=len(flight_buffer) >= args.commit_samples)
+                                commit_ready=len(flight_buffer) >= commit_samples_eff)
 
-                        if not attempted and gate and len(flight_buffer) >= args.commit_samples:
+                        if not attempted and (gate or servo_mode) and len(flight_buffer) >= commit_samples_eff:
                             orient = target_orientation(commit_point, result.impact_vel_base)
                             target_pose = [float(commit_point[0]), float(commit_point[1]), float(commit_point[2]),
                                            orient[0], orient[1], orient[2]]
@@ -1580,15 +1648,19 @@ def main():
                                     refuse_logged = True
                                 rec.log("refuse", t=flight_buffer[-1].t, reason=reason, target=commit_point)
                             else:
-                                verdict = "CATCH" if result.feasible else "POSSIBLY"
+                                # "EARLY" only reachable via the servo gate bypass above -
+                                # movel/movej always have feasible or possible true here.
+                                verdict = "CATCH" if result.feasible else "POSSIBLY" if result.possible else "EARLY"
                                 stability_note = "" if trusted is not None else "  [instant, pred_window not full yet]"
                                 print(f"    >> COMMIT ({verdict}){stability_note}: {args.catch_move} to "
                                       f"({commit_point[0]:+.3f},{commit_point[1]:+.3f},{commit_point[2]:+.3f}) "
                                       + (f"v={args.catch_joint_speed}rad/s a={args.catch_joint_accel}rad/s^2"
                                          if args.catch_move == "movej" else f"v={args.speed} a={args.accel}")
                                       + ("   [dry-run: not sent]" if args.dry_run else ""))
+                                if not args.no_beep:
+                                    beep.play("predict")
                                 rec.log("commit", t=flight_buffer[-1].t,
-                                        verdict="catch" if result.feasible else "possible",
+                                        verdict="catch" if result.feasible else "possible" if result.possible else "early",
                                         target_pose=target_pose, speed=args.speed, accel=args.accel,
                                         move_kind=args.catch_move, yaw_follow=(not args.no_yaw_follow),
                                         stable=trusted is not None, dry_run=args.dry_run)
@@ -1618,15 +1690,26 @@ def main():
                             env = check_catch_envelope(np.array(new_point), wait_xyz)
                             if env is None:
                                 drift = float(np.linalg.norm(np.array(new_point) - committed_target))
-                                servo_target = np.array(new_point, dtype=float)
-                                servo_orient = target_orientation(np.array(new_point), result.impact_vel_base)
-                                committed_target = np.array(new_point, dtype=float)
-                                if drift >= args.reaim_min:
-                                    # Logged only on meaningful movement: at 125Hz an
-                                    # unconditional event per tick would bury the log.
-                                    rec.log("retarget", t=flight_buffer[-1].t, n=result.n_samples,
-                                            drift=drift, target=new_point,
-                                            t_impact=result.time_to_impact)
+                                # Finish-phase freeze (2026-07-21): see --servo-freeze-dist help.
+                                # Once the arm is nearly at the current target, only take a new
+                                # retarget if it clears the same drift bar used for logging below -
+                                # otherwise hold the last commit instead of chasing sub-cm prediction
+                                # jitter that the real servoj stream can't fully track at speed.
+                                # Envelope/reach check above is untouched, so this never shrinks reach.
+                                dist_to_target = float(np.linalg.norm(np.array(new_point) - current_tcp_xyz))
+                                near_finish = dist_to_target < args.servo_freeze_dist
+                                if not near_finish or drift >= args.reaim_min:
+                                    servo_target = np.array(new_point, dtype=float)
+                                    servo_orient = target_orientation(np.array(new_point), result.impact_vel_base)
+                                    committed_target = np.array(new_point, dtype=float)
+                                    if drift >= args.reaim_min:
+                                        # Logged only on meaningful movement: at 125Hz an
+                                        # unconditional event per tick would bury the log.
+                                        rec.log("retarget", t=flight_buffer[-1].t, n=result.n_samples,
+                                                drift=drift, target=new_point,
+                                                t_impact=result.time_to_impact)
+                                        if not args.no_beep:
+                                            beep.play("reaim")
 
                         elif (attempted and not args.no_reaim and committed_target is not None
                               and reaim_count < args.reaim_max_count):
@@ -1665,6 +1748,8 @@ def main():
                                           f"{new_point[2]:+.3f}), corr_time={corr_time:.2f}s "
                                           f"t_impact={result.time_to_impact:.2f}s"
                                           + ("   [dry-run: not sent]" if args.dry_run else ""))
+                                    if not args.no_beep:
+                                        beep.play("reaim")
                                     rec.log("reaim", t=flight_buffer[-1].t, n=result.n_samples,
                                             count=reaim_count, drift=drift, target_pose=corr_pose,
                                             corr_time=corr_time, t_impact=result.time_to_impact,
@@ -1708,9 +1793,13 @@ def main():
                                 catches += 1
                                 print(f"    CATCH! (ball last seen {ball_last_dist*100:.0f}cm from tool)"
                                       f"   session: {catches}/{attempts_ended} attempted")
+                                if not args.no_beep:
+                                    beep.play("catch")
                             else:
                                 print(f"    missed - ball last seen {ball_last_dist:.2f}m from tool"
                                       f"   session: {catches}/{attempts_ended} attempted")
+                                if not args.no_beep:
+                                    beep.play("miss")
                     rec.log("throw_end",
                             reason=history_head.reason if history_head else None,
                             duration=history_head.duration if history_head else None,

@@ -274,6 +274,20 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   when that's revisited (see `docs/debug_log.md`).
 
 ### Key safety rules
+- **`--dry-run` before a real session is a judgment call, not a blanket rule**
+  (2026-07-22 user directive, superseding the earlier reflexive "dry-run
+  first, then a real session" phrasing elsewhere in this file — those are
+  leftover instances of the old default, not a standing requirement). Reach
+  for `--dry-run` when a change has a REALISTIC chance of something novel
+  going wrong: a new motion primitive, a materially different commit/gate
+  timing, a bigger commanded speed/accel/reach envelope, anything touching
+  the safety-critical path for the first time. Skip it for incremental
+  tuning, logging/analysis-only changes, or anything where the worst
+  realistic outcome is a protective stop — a protective stop is an
+  acceptable, expected backstop here, not an incident to engineer around.
+  User has never actually run `--dry-run` before a first real test
+  themselves. Don't re-insert "dry-run first" as reflexive caveat text on
+  every change going forward; only flag it when the risk genuinely warrants it.
 - **Never force-kill (SIGTERM/`timeout`) a script holding an active `ur_rtde`
   control session** — skips Python's `finally` cleanup, strands the robot's real-time
   thread, causes a protective stop on the next run. See
@@ -519,10 +533,18 @@ every exit path, including Ctrl-C.
   pre-positioned wait pose). Needs a live-throw validation run; start with `--dry-run`.
 - (5) 🔨 v2 servoj streaming — **transport DONE and validated 2026-07-20**
   (`ur_servo.py`, `track_ball_servo.py`; 0 late ticks, 3.1mm lag at 125Hz).
-  Still to do: drive the stream from a PREDICTED intercept rather than the
-  ball's current position, which is what dissolves the commit-then-locked model
-  and targets the 46 throws the feasibility gate currently refuses outright.
-  Then tighter margins + smaller tools.
+  **Early commit implemented 2026-07-22**: `--catch-move servo` now starts
+  driving toward the predicted intercept at `--early-commit-samples` (default
+  5, vs `--commit-samples`' 40 for movel/movej) with the feasibility gate
+  bypassed for that first move — it fires on any valid plane crossing that
+  clears the envelope/release-guard, and the existing continuous-retarget
+  branch (`catch.py`, "attempted and servo_mode") pulls the noisy early guess
+  toward the true intercept every tick after. This is what dissolves the
+  commit-then-locked model and targets the throws the feasibility gate used to
+  refuse outright. **Not yet validated on the real arm** — this changes commit
+  timing materially (bypasses the feasibility gate for servo's first move), so
+  worth a `--dry-run` before a real session per the Key safety rules judgment
+  call above. Then tighter margins + smaller tools.
 
 **Reference prior art / methods:**
 - EPFL/LASA "Catching Objects in Flight" (Kim & Billard) — canonical mocap + fast arm +
@@ -562,14 +584,55 @@ every exit path, including Ctrl-C.
   opt-in): preempt replaces a running move (validate at low speed, watch for protective
   stops at the preemption instant); tilt-follow needs an IK-reachability check near the
   envelope edge. Motivations + data: `docs/debug_log.md` 2026-07-18 §2/§4/§8.
-- **TODO: `ur_servo.py --self-test` is currently failing** — the multi-seed simulated
-  session (part 6) measures acceleration spikes of ~25-108 m/s² against caps of 2-4
-  m/s², at ordinary mid-workspace points, not near the r≈0 singularity the surrounding
-  code comments discuss. Reproduces at both the old (0.6/2.0) and current (1.2/4.0)
-  `--servo-max-speed`/`--servo-max-accel` values (2026-07-21). Root cause not yet
-  found — likely in the accel-search/geometric-term interaction in `RateLimiter.step()`.
-  Needs fixing and a clean self-test before trusting `--catch-move servo` output,
-  though real-arm protective stops remain a backstop in the meantime.
+- **`ur_servo.py --self-test` FIXED (2026-07-21)** — root cause was the final-approach
+  deadband in `RateLimiter.step()` (not the accel-search/geometric-term interaction
+  originally suspected): it snapped straight to the target and zeroed `prev_v_*`
+  unconditionally, with no check that doing so was itself accel-consistent. That let
+  a still-jittering (not-yet-converged) predicted target re-trigger the snap almost
+  every tick, and separately let a real, still-substantial velocity get discarded to
+  a fictitious 0 baseline, both producing real discontinuities in the commanded
+  stream (measured 25-108 m/s² against 2-4 m/s² caps). Fix: gate the snap on the
+  acceleration it would itself imply (same polar decomposition the main accel search
+  uses) and, when taken, carry the velocity actually used forward as `prev_v_*`
+  instead of zeroing it. Self-test passes; 30-seed×150-throw sweep plateaus at the
+  pre-existing documented ~2.15x residual, not a new spike. Traded off: braking
+  overshoot at 1.2 m/s rose from 2.4mm to 4.8mm (deadband no longer snaps
+  unconditionally) — no longer comfortably inside the 4.25mm calibration RMSE, worth
+  watching if catch accuracy regresses. `--catch-move servo` is still otherwise
+  unvalidated on the real arm; real-arm protective stops remain a backstop.
+- **Servo orientation rate limiting — IMPLEMENTED 2026-07-22, not yet validated
+  on the real arm.** Root cause (see the prior entry, kept for the diagnosis):
+  `ur_servo.RateLimiter.step()` bounded `cmd_xyz` only; `servo_orient` (yaw-
+  follow/tilt-follow) was sent raw every tick, snapping the full commit-instant
+  yaw delta straight onto the **base joint** in one tick — `yaw_follow_orientation()`
+  rotates about base Z by design (keeps the wrist still), so IK had to reconcile
+  "position still near the wait pose" with "orientation already at the final
+  azimuth" in ~8ms. Suspected root cause of both the "oscillating to come to a
+  stop" behavior and the base-joint accel-limit faults seen in real 2026-07-21/22
+  sessions, regardless of `--servo-max-speed`/`--servo-max-accel` (neither
+  touched this channel). Fix: `ur_servo.OrientationRateLimiter` (new class,
+  alongside `RateLimiter`) slew-limits the rotation vector the same way —
+  speed-capped, accel-capped, braking smoothly toward a held target via the
+  same `sqrt(2*a*margin)` form `RateLimiter._brake_cap` uses — wired into
+  `catch.py`'s `emit_setpoint()` alongside the position limiter, defaulting to
+  the same rate budget as `--servo-base-rate-deg-s` (`--servo-orient-max-rate-deg-s`
+  to override). Unlike `RateLimiter`, target-overshoot is *not* treated as a
+  hard bound (mirroring `RateLimiter._axis_cap`'s own stated philosophy — smooth
+  acceleration is the real safety property, not landing exactly on target), so
+  the implementation is a single 1D blend, no cylindrical-coordinate machinery
+  needed. Self-tested (`ur_servo.py --self-test`, parts 7–8): the commit-instant
+  snap is exact from the first tick (matches the actual bug); a bounded,
+  understood tail-convergence residual remains when a HELD-STILL target finishes
+  converging (up to ~4.7x the accel cap for one tick, vs `RateLimiter`'s own
+  documented, accepted 2.15x residual for the same class of discrete-time
+  `sqrt(2*a*margin)`-braking artifact — worse here only because this class
+  defaults to a punchier 0.15s rate-to-accel ramp, matching `RateLimiter`'s own
+  `max_base_accel` convention, not its gentler ~0.3s one). Not yet validated on
+  the real arm — offline replay of the 2026-07-22 fault sessions through the new
+  limiter (see that day's conversation) showed a ~2.3x larger commit-instant
+  orientation jump on faulted throws vs non-faulted ones and the new limiter
+  cutting worst-case commanded accel by 50-500x, but that's circumstantial, not
+  a live confirmation.
 
 ## Status (2026-07-20)
 Real motion works (raw URScript-over-socket). Trajectory fitting/prediction

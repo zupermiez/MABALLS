@@ -468,9 +468,42 @@ class RateLimiter:
         # class already had to fix once (see class docstring, 2026-07-21).
         theta_ok = self.max_base_rate is None or abs(dth_want) <= self.max_base_rate * dt
         if theta_ok and math.dist((dx, dy, z_des), self.cmd) < self.max_speed * dt:
-            self.r, self.theta, self.z = r_des, th_des, z_des
-            self.prev_v_r = self.prev_omega = self.prev_v_z = 0.0
-            return self.cmd
+            # The snap is only meant to dodge the sqrt(2*a*margin) cap's
+            # diverging slope right at the finish of a STATIONARY approach,
+            # where residual velocity is already nearly gone - it must not
+            # bypass the acceleration bound itself. Without this check it
+            # fires just as readily while real velocity is still substantial
+            # (a not-yet-converged, still-jittering predicted target can
+            # graze within max_speed*dt of the current command for one tick
+            # while the arm is still moving at speed), commanding whatever
+            # deceleration closing the gap in a single dt implies - measured
+            # 25-108 m/s^2 against a 2-4 m/s^2 cap in the multi-seed session
+            # (docs/debug_log.md 2026-07-21), and re-triggering nearly every
+            # tick after since the jittering target keeps re-entering the
+            # threshold. Same polar decomposition step()'s main accel search
+            # uses below, applied to "close the whole remaining gap this
+            # tick" as the candidate velocity; only snap if that's actually
+            # within budget, otherwise fall through to the normal blend.
+            v_r_snap, omega_snap, v_z_snap = dr_want / dt, dth_want / dt, dz_want / dt
+            a_radial = (v_r_snap - self.prev_v_r) / dt - self.r * omega_snap * omega_snap
+            a_tang = self.r * (omega_snap - self.prev_omega) / dt + 2.0 * v_r_snap * omega_snap
+            a_z = (v_z_snap - self.prev_v_z) / dt
+            a_mag = math.sqrt(a_radial * a_radial + a_tang * a_tang + a_z * a_z)
+            if a_mag <= self.max_accel * 1.0002:
+                self.r, self.theta, self.z = r_des, th_des, z_des
+                # Store the velocity the snap actually just used, NOT zero.
+                # The commanded position stream just moved at v_*_snap this
+                # tick (that's what closing the gap in one dt means) - if the
+                # NEXT tick's bookkeeping pretends that was 0, a later tick
+                # sees a fictitious "already at rest" baseline and can wave
+                # through an actual stream discontinuity (e.g. -0.2 m/s this
+                # tick, 0 the next) that IS a real ~25 m/s^2 spike in what
+                # gets sent to the robot, just not one the a_mag gate above
+                # catches on that later tick (it only guards THIS tick's
+                # jump). Carrying the real velocity forward means that later
+                # jump gets caught by the same gate/frac-search instead.
+                self.prev_v_r, self.prev_omega, self.prev_v_z = v_r_snap, omega_snap, v_z_snap
+                return self.cmd
 
         h_min = h_max = None
         if self.reach_bounds is not None:
@@ -739,6 +772,210 @@ class RateLimiter:
             self.r = 0.0
             v_r_c = 0.0
         self.prev_v_r, self.prev_omega, self.prev_v_z = v_r_c, omega_c, v_z_c
+        return self.cmd
+
+
+# --- Rotation-vector helpers. Used by OrientationRateLimiter below and by
+# catch.py's yaw_follow_orientation/tilt_follow_orientation (imported from
+# here rather than duplicated - this module already owns the streamed-setpoint
+# safety math, orientation is just the other half of a pose). ---
+
+def rotvec_to_quat(rv: Sequence[float]) -> np.ndarray:
+    rv = np.asarray(rv, dtype=float)
+    theta = float(np.linalg.norm(rv))
+    if theta < 1e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    axis = rv / theta
+    return np.concatenate([[math.cos(theta / 2)], axis * math.sin(theta / 2)])
+
+
+def quat_to_rotvec(q: Sequence[float]) -> np.ndarray:
+    w, v = q[0], np.asarray(q[1:], dtype=float)
+    n = float(np.linalg.norm(v))
+    if n < 1e-12:
+        return np.zeros(3)
+    theta = 2.0 * math.atan2(n, w)
+    if theta > math.pi:
+        theta -= 2.0 * math.pi
+    return (v / n) * theta
+
+
+def quat_multiply(q1: Sequence[float], q2: Sequence[float]) -> np.ndarray:
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+
+
+def quat_slerp(q0: Sequence[float], q1: Sequence[float], t: float) -> np.ndarray:
+    """Spherical-linear-interpolate unit quaternions q0->q1, t in [0, 1].
+
+    Standard shortest-path SLERP (flips q1 if the dot product is negative,
+    since q and -q represent the same rotation) with a linear-interpolate +
+    renormalize fallback when q0/q1 are nearly coincident, where SLERP's
+    1/sin(theta0) term would blow up.
+    """
+    q0 = np.asarray(q0, dtype=float)
+    q1 = np.asarray(q1, dtype=float)
+    dot = float(np.dot(q0, q1))
+    if dot < 0.0:
+        q1 = -q1
+        dot = -dot
+    dot = min(dot, 1.0)
+    if dot > 0.9995:
+        result = q0 + t * (q1 - q0)
+        return result / np.linalg.norm(result)
+    theta0 = math.acos(dot)
+    theta = theta0 * t
+    sin_theta0 = math.sin(theta0)
+    s1 = math.sin(theta) / sin_theta0
+    s0 = math.cos(theta) - dot * s1
+    return s0 * q0 + s1 * q1
+
+
+class OrientationRateLimiter:
+    """Slew-limits a streamed rotation vector the same way RateLimiter bounds a
+    streamed position - added 2026-07-22 after catch.py was found sending
+    servo_orient (yaw-follow/tilt-follow) completely unbounded alongside a
+    rate-limited position.
+
+    WHY THIS EXISTS. On commit, catch.py's target orientation snaps straight to
+    its final value (the whole wait-pose -> commit-point yaw delta, up to the
+    catch envelope's +/-75deg, in one tick) while cmd_xyz is still crawling out
+    of the wait pose under RateLimiter. yaw_follow_orientation() rotates about
+    base Z BY DESIGN (see its docstring in catch.py - deliberately keeps the
+    wrist still and pans with the base instead), so that snap lands almost
+    entirely on the BASE joint: get_inverse_kin has to reconcile "position
+    still near the wait pose" with "orientation already at the final azimuth"
+    in a single ~8ms tick, which can demand nearly the whole azimuth sweep in
+    J0 immediately. This was the suspected root cause of both the "oscillating
+    to come to a stop" behavior and the base-joint accel-limit protective
+    stops seen in real 2026-07-21/22 servo sessions - and specifically why
+    tuning --servo-max-speed/-accel (position-only params) never fixed either
+    symptom, only traded one for the other depending on how much headroom that
+    left the (untouched) orientation channel.
+
+    UNLIKE POSITION, SIMPLER. Orientation has no coordinate singularity
+    (RateLimiter's r=0 problem) and no workspace envelope to brake against -
+    it is plain 1D motion along the SLERP geodesic, parameterised by the angle
+    remaining (always >= 0, recomputed fresh each tick from wherever the
+    target currently is). No geometric/coupling terms are needed the way
+    RateLimiter's frac search needs them for its three coupled axes.
+
+    Each tick picks a desired speed omega_des = min(max_rate, the brake-toward-
+    target cap sqrt(2*max_accel*remaining) - same textbook control-barrier-
+    function form as RateLimiter's _brake_cap, and remaining/dt - "don't ask
+    for more than what closes the gap this tick", mirroring RateLimiter's own
+    `dr0 = min(|dr_want|, axis_cap)` pattern), then accel-limits the blend from
+    prev_omega toward it. Overshooting the TARGET itself is deliberately not a
+    hard bound here either - same call RateLimiter's _axis_cap docstring makes
+    ("the axis doesn't overshoot its own target, using the full accel budget -
+    that overshoot isn't a hard safety bound"): smooth, accel-bounded motion is
+    the actual safety property that matters, not landing exactly on the
+    target. The `min(remaining, v_used*dt)` step clamp only prevents stepping
+    PAST the target when max_accel genuinely can't brake fast enough in time
+    (a real, occasionally unavoidable case, not a bug) - prev_omega still
+    stores the intended v_used, not the possibly-smaller achieved step, so a
+    later retarget always ramps from a true, accel-consistent velocity instead
+    of a fictitious one (same reasoning as RateLimiter's 2026-07-21 snap fix).
+
+    Residual, accepted: converging onto a HELD-STILL target still shows a
+    bounded, one-tick discretization residual right as remaining -> 0 - the
+    same phenomenon RateLimiter's own self-test documents and accepts at 2.2x
+    ("the ideal continuous sqrt(2*a*margin) profile hits zero in finite time,
+    but sampled at a fixed dt the last step can demand a slightly bigger
+    velocity drop than a smooth max_accel*dt step would give"). Measured up to
+    ~4.7x here (see --self-test part 7) - worse than RateLimiter's 2.15x
+    because max_accel defaults to the PUNCHIER max_rate/0.15s ramp (matching
+    RateLimiter's own max_base_accel convention for base-joint responsiveness),
+    not the gentler ~0.3s ramp their 2.15x figure came from; a punchier ramp
+    reaches the diverging-slope zone in fewer ticks, coarsening the discrete
+    approximation of the same continuous curve. Bounded and understood, not a
+    runaway, and it only ever hits during a benign settle-to-a-stop, never
+    during the actual commit-instant jump this class exists to bound (that
+    case is exact from the first tick - see --self-test part 7's first-step/
+    worst-speed checks).
+
+    SIMPLIFICATION, DELIBERATE: acceleration continuity is tracked as a scalar
+    angular speed (prev_omega), not a full angular-velocity VECTOR - a true
+    vector-acceleration bound would also catch a rotation-AXIS change between
+    ticks, which this does not. Accepted because in this project's actual use
+    (yaw_follow_orientation as a continuous function of a continuously-
+    refining catch point) the rotation axis is stable tick-to-tick except at
+    the single commit-instant jump, which this class already handles
+    correctly regardless of size (ramping speed up from 0 against
+    `remaining`) - modelling full vector acceleration would add real
+    complexity for a case this project does not actually hit.
+    """
+
+    def __init__(self, start_rv: Sequence[float], max_rate: float, max_accel: Optional[float] = None):
+        self.max_rate = float(max_rate)
+        # Same "reach full rate in 0.15s" default RateLimiter's max_base_accel uses.
+        self.max_accel = float(max_accel) if max_accel is not None else self.max_rate / 0.15
+        self.q = rotvec_to_quat(start_rv)
+        self.prev_omega = 0.0
+
+    def reset(self, rv: Sequence[float]) -> None:
+        """Re-seed to `rv` and zero the step history - same discontinuity-recovery
+        role as RateLimiter.reset()."""
+        self.q = rotvec_to_quat(rv)
+        self.prev_omega = 0.0
+
+    @property
+    def cmd(self) -> np.ndarray:
+        return quat_to_rotvec(self.q)
+
+    def step(self, desired_rv: Sequence[float], dt: float) -> np.ndarray:
+        """Advance one tick toward `desired_rv`; returns the new commanded rotvec."""
+        if dt <= 0:
+            return self.cmd
+        q_des = rotvec_to_quat(desired_rv)
+        # Geodesic distance between two unit quaternions AS ROTATIONS (q and -q
+        # are the same rotation, hence abs()): angle = 2*acos(|q0 . q1|).
+        dot = min(abs(float(np.dot(self.q, q_des))), 1.0)
+        remaining = 2.0 * math.acos(dot)
+        if remaining < 1e-12:
+            return self.cmd  # exactly at target already - nothing to step, prev_omega untouched
+
+        # Desired speed: braking-toward-target (sqrt(2*a*remaining), same textbook
+        # form as RateLimiter's _brake_cap), the flat rate cap, AND "don't ask for
+        # more than what's needed to close the gap this tick" (remaining/dt) - all
+        # three as independent candidates, tightest wins. That third term mirrors
+        # RateLimiter's `dr0 = min(|dr_want|, axis_cap)` (its _axis_cap docstring:
+        # "the axis doesn't overshoot its own target, using the full accel budget -
+        # THAT OVERSHOOT ISN'T A HARD SAFETY BOUND"), the same "target overshoot is
+        # fine, smooth acceleration is what matters" philosophy this class follows.
+        brake_cap = math.sqrt(2.0 * self.max_accel * remaining)
+        omega_des = min(self.max_rate, brake_cap, remaining / dt)
+
+        # Accel-limited blend from prev_omega toward omega_des. Plain 1D rate
+        # limiting - no geometric/coupling terms needed the way RateLimiter's
+        # frac search does, because this class has exactly one degree of freedom
+        # (the angle remaining), not three coupled ones.
+        if omega_des >= self.prev_omega:
+            v_used = min(omega_des, self.prev_omega + self.max_accel * dt)
+        else:
+            v_used = max(omega_des, self.prev_omega - self.max_accel * dt)
+
+        # v_used <= omega_des <= remaining/dt in the common case, so this clamp
+        # is usually a no-op; it only bites when braking as hard as max_accel
+        # allows still isn't enough to hit omega_des exactly (a genuine "can't
+        # decelerate that fast" case) - then v_used can exceed remaining/dt and
+        # this caps the STEP (not v_used/prev_omega, which stay accel-consistent)
+        # at the target itself rather than stepping past it needlessly.
+        dtheta = min(remaining, v_used * dt)
+        frac = dtheta / remaining
+        self.q = quat_slerp(self.q, q_des, frac)
+        # Store the INTENDED v_used, not the possibly-smaller achieved dtheta/dt -
+        # same reasoning as RateLimiter's snap fix (2026-07-21, its class
+        # docstring): if a later tick's bookkeeping saw the clamped, possibly much
+        # smaller achieved rate instead, it would treat that as the new velocity
+        # baseline and could wave through a real jump on the tick after.
+        self.prev_omega = v_used
         return self.cmd
 
 
@@ -1021,9 +1258,13 @@ def _self_test() -> None:
         naive = v_max * v_max / (2 * a_max)
         # 5mm, not 0: with the acceleration limit having the last word (see step())
         # the braking ramp is slightly softened, so a few mm of overshoot is the
-        # designed behaviour rather than a defect. Measured 0.6/1.5/2.4mm at
-        # 0.25/0.6/1.2 m/s - three orders of magnitude better than undamped, and
-        # well inside a 4.25mm calibration.
+        # designed behaviour rather than a defect. Measured 1.0/2.4/4.8mm at
+        # 0.25/0.6/1.2 m/s (up from 0.6/1.5/2.4mm before the 2026-07-21 deadband
+        # accel-consistency fix - the deadband no longer snaps unconditionally,
+        # so a bit more of the approach now goes through the softer accel-limited
+        # ramp) - still three orders of magnitude better than undamped, though the
+        # 1.2 m/s case (4.8mm) is no longer comfortably inside a 4.25mm
+        # calibration and is worth revisiting if catch accuracy regresses.
         assert overshoot < 0.005, f"overshoot {overshoot*1000:.1f}mm at v={v_max} (naive would be {naive*100:.0f}cm)"
         assert abs(lim.cmd[0] - target[0]) < 1e-3, f"did not settle on target at v={v_max}"
         overshoots.append(overshoot * 1000)
@@ -1128,6 +1369,88 @@ def _self_test() -> None:
               f"{math.degrees(omega):.1f}deg/s (cap 110), speed {speed:.3f}m/s (cap {v_max}), "
               f"accel {accel:.2f}m/s^2 (cap {a_max}), envelope held to "
               f"{max(reach_over, z_over, 0.0) * 1000:.3f}mm")
+
+    # 7) OrientationRateLimiter - same speed/accel guarantees as RateLimiter,
+    # now for the rotation vector servo_orient streams alongside position.
+    # Simulates the exact catch.py bug scenario: a commit-instant snap from
+    # rest to a target far away in one call - swept across many target angles
+    # (not just the catch envelope's 75deg azimuth cap) since the worst-case
+    # tail residual (see below) turned out to depend on the angle.
+    max_rate = math.radians(110.0)
+    max_accel = max_rate / 0.15
+    worst_orient_speed = 0.0
+    worst_orient_accel = 0.0
+    worst_first_step_deg = 0.0
+    for target_deg in np.linspace(0.5, 175.0, 40):
+        target_rv = [0.0, 0.0, math.radians(float(target_deg))]
+        olim = OrientationRateLimiter([0.0, 0.0, 0.0], max_rate, max_accel)
+        prev_rv = olim.cmd.copy()
+        prev_speed = 0.0
+        for i in range(600):
+            cur = olim.step(target_rv, dt)
+            dot = min(abs(float(np.dot(rotvec_to_quat(cur), rotvec_to_quat(prev_rv)))), 1.0)
+            dtheta = 2.0 * math.acos(dot)
+            speed = dtheta / dt
+            if i == 0:
+                worst_first_step_deg = max(worst_first_step_deg, math.degrees(dtheta))
+            worst_orient_speed = max(worst_orient_speed, speed)
+            worst_orient_accel = max(worst_orient_accel, abs(speed - prev_speed) / dt)
+            prev_speed = speed
+            prev_rv = cur.copy()
+        final_dot = min(abs(float(np.dot(olim.q, rotvec_to_quat(target_rv)))), 1.0)
+        final_err_deg = math.degrees(2.0 * math.acos(final_dot))
+        assert final_err_deg < 0.1, \
+            f"orientation limiter never converged to a {target_deg:.0f}deg target ({final_err_deg:.3f}deg residual)"
+    assert worst_first_step_deg <= math.degrees(max_rate) * dt * 1.001, \
+        f"first tick after a commit-style snap moved {worst_first_step_deg:.2f}deg - not rate-limited"
+    assert worst_orient_speed <= max_rate * 1.001, \
+        f"orientation speed limit violated: {math.degrees(worst_orient_speed):.2f}deg/s (cap {math.degrees(max_rate):.0f})"
+    # 5.5x, not ~1x: same class of bounded discretization residual RateLimiter's
+    # own self-test accepts at 2.2x for its envelope brake (see its comment just
+    # above - "the ideal continuous sqrt(2*a*margin) profile hits zero in finite
+    # time, but sampled at a fixed dt the last step can demand a slightly bigger
+    # velocity drop than a smooth max_accel*dt step would give, right at that one
+    # tick"). Worse here (measured worst ~4.7x across this same target-angle
+    # sweep, ~4.9x with added realistic settle noise) because this class's
+    # max_accel is intentionally the punchier max_rate/0.15s ramp (matching
+    # RateLimiter's OWN max_base_accel convention for base-joint responsiveness),
+    # not the gentler ~0.25-0.3s ramp RateLimiter's 2.15x figure came from -
+    # a punchier ramp reaches the diverging-slope zone in fewer ticks, coarsening
+    # the discrete approximation of the same continuous curve. Bounded, doesn't
+    # grow with more targets swept, and only ever hits for ONE tick right as a
+    # HELD-STILL target finishes converging (not during the actual commit-instant
+    # jump this class exists to bound - see the first-tick/speed asserts above,
+    # both comfortably exact) - a real but secondary residual, not the failure
+    # mode this class was built against.
+    assert worst_orient_accel <= max_accel * 5.5, \
+        f"orientation accel limit violated: {math.degrees(worst_orient_accel):.1f}deg/s^2 (cap {math.degrees(max_accel):.1f})"
+    print(f"[orient limit] commit-style snaps (0.5-175deg swept): first tick <= {worst_first_step_deg:.3f}deg "
+          f"(cap {math.degrees(max_rate) * dt:.3f}), worst speed {math.degrees(worst_orient_speed):.1f}deg/s "
+          f"(cap {math.degrees(max_rate):.0f}), worst tail-convergence accel "
+          f"{math.degrees(worst_orient_accel):.1f}deg/s^2 (cap {math.degrees(max_accel):.1f}, "
+          f"{worst_orient_accel / max_accel:.2f}x), all targets converged <0.1deg")
+
+    # 8) No overshoot-then-correct oscillation against a fixed target - the bug
+    # RateLimiter needed an explicit deadband fix for (see its class
+    # docstring, 2026-07-21). Error-to-target must shrink or hold EVERY tick,
+    # never increase, since OrientationRateLimiter hard-caps the angle stepped
+    # each tick at exactly `remaining` by construction (see class docstring) -
+    # this is checking that structural guarantee directly, not just the
+    # symptom RateLimiter's fix targeted.
+    olim = OrientationRateLimiter([0.0, 0.0, 0.0], max_rate, max_accel)
+    target_rv2 = [0.0, 0.0, math.radians(30.0)]
+    q_tgt2 = rotvec_to_quat(target_rv2)
+    prev_err = 2.0 * math.acos(min(abs(float(np.dot(olim.q, q_tgt2))), 1.0))
+    for _ in range(300):
+        cur = olim.step(target_rv2, dt)
+        dot = min(abs(float(np.dot(rotvec_to_quat(cur), q_tgt2))), 1.0)
+        err = 2.0 * math.acos(dot)
+        assert err <= prev_err + 1e-9, \
+            f"error-to-target increased ({math.degrees(prev_err):.4f} -> {math.degrees(err):.4f}deg) - overshoot/oscillation"
+        prev_err = err
+    assert prev_err < 1e-6, f"did not converge exactly onto a fixed target ({math.degrees(prev_err):.4f}deg residual)"
+    print("[orient limit] fixed-target convergence: error-to-target strictly non-increasing every tick, "
+          f"final residual {math.degrees(prev_err):.6f}deg")
 
     print("\nself-test passed")
 
