@@ -81,9 +81,10 @@ from natnet import NatNetClient, DataFrame
 
 from live_trajectory import STATE_LOCK, SharedState, add_release_detection_args, make_handler
 from trajectory import AXIS_NAMES
-from frames import mocap_point_to_base
+from frames import mocap_point_to_base, quat_to_matrix, base_from_mocap_via_rigid_body
 from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script, movej_to_pose_script
 from calibrate_frames import send_urscript, set_tcp_script
+from verify_base_rb import BaseRBState, make_base_rb_handler, BASE_RB_LOCK
 from ur_servo import (
     RateLimiter, OrientationRateLimiter, ServoStream, HOST_IP as SERVO_HOST_IP,
     HOST_PORT as SERVO_HOST_PORT, DEFAULT_GAIN as SERVO_DEFAULT_GAIN,
@@ -859,6 +860,19 @@ def main():
     # Transform / model -----------------------------------------------------------
     parser.add_argument("--transform-file", default="T_base_from_mocap.json",
                         help="T_base<-mocap from calibrate_frames.py")
+    parser.add_argument("--base-rb-transform", default=None,
+                        help="EXPERIMENTAL, not yet real-arm validated (2026-07-23) - opt-in only, "
+                             "off by default. Path to calibrate_base_rb.py's output "
+                             "(T_base_from_baseRB.json). When given, base<-mocap is recomputed every "
+                             "tick from a second tracked rigid body mounted on the robot's fixed base "
+                             "(frames.base_from_mocap_via_rigid_body) instead of loaded once from "
+                             "--transform-file - lets the whole rig be physically repositioned between "
+                             "sessions without rerunning calibrate_frames.py, as long as that rigid "
+                             "body stays fixed to the base. --transform-file is still used for the "
+                             "catch plane / TCP offset / startup banner either way. A --dry-run pass is "
+                             "strongly recommended the first time this is used for real - it changes "
+                             "how the transform everything else (release guard, feasibility, envelope) "
+                             "is computed from, for the first time, on the live control path.")
     parser.add_argument("--speed-char-json", default=None,
                         help="speed_char.py JSON for the move-time model (default: newest in cwd)")
     parser.add_argument("--cruise-speed", type=float, default=DEFAULT_CRUISE_SPEED,
@@ -1102,6 +1116,18 @@ def main():
     with open(args.transform_file) as f:
         tcp_offset = json.load(f)["tcp_offset"]
 
+    base_rb_mode = args.base_rb_transform is not None
+    R_base_rb = t_base_rb = base_rb_id = None
+    if base_rb_mode:
+        with open(args.base_rb_transform) as f:
+            base_rb_data = json.load(f)
+        R_base_rb = np.array(base_rb_data["R"])
+        t_base_rb = np.array(base_rb_data["t"])
+        base_rb_id = base_rb_data["rigid_body_id"]
+        print(f"[EXPERIMENTAL] base<-mocap will be recomputed every tick from rigid body "
+              f"id={base_rb_id} (--base-rb-transform {args.base_rb_transform}), not loaded static from "
+              f"{args.transform_file}. Not yet validated on the real arm - see --base-rb-transform help.")
+
     print(f"connecting to robot at {args.robot_ip} ...")
     rtde_r = rtde_receive.RTDEReceiveInterface(args.robot_ip)
     rec.attach_rtde(rtde_r)  # every JSONL line from here on carries robot_clock too
@@ -1162,7 +1188,10 @@ def main():
     print("=" * 78)
     print("CATCH - REAL ARM MOTION" + ("  [DRY RUN - no motion]" if args.dry_run else ""))
     print("=" * 78)
-    print(f"transform: {args.transform_file} (rmse={calib_rmse * 1000:.1f}mm)  robotmode={robot_mode}")
+    transform_desc = (f"LIVE via base RB id={base_rb_id} ({args.base_rb_transform}, "
+                      f"static fallback {args.transform_file} rmse={calib_rmse * 1000:.1f}mm) [EXPERIMENTAL]"
+                      if base_rb_mode else f"{args.transform_file} (rmse={calib_rmse * 1000:.1f}mm)")
+    print(f"transform: {transform_desc}  robotmode={robot_mode}")
     print(f"move-time model: accel={model.accel:.2f} m/s^2 latency={model.latency*1000:.0f}ms cruise={model.v_max:.2f} m/s")
     print(f"wait pose (base): pos=({wait_xyz[0]:+.3f},{wait_xyz[1]:+.3f},{wait_xyz[2]:+.3f}) reach={np.linalg.norm(wait_xyz):.2f}m  "
           f"orient=({wait_pose[3]:+.3f},{wait_pose[4]:+.3f},{wait_pose[5]:+.3f})")
@@ -1208,6 +1237,7 @@ def main():
     rec.log("run_start",
             dry_run=args.dry_run, robot_ip=args.robot_ip,
             transform_file=args.transform_file, calib_rmse_m=calib_rmse, calib_created=calib_created,
+            base_rb_mode=base_rb_mode, base_rb_transform=args.base_rb_transform, base_rb_id=base_rb_id,
             tcp_offset=tcp_offset, robot_mode=robot_mode, speed_fraction=frac,
             wait_pose=wait_pose, catch_axis=AXIS_NAMES[catch_axis_idx], catch_value=catch_value,
             catch_envelope={"reach_min": CATCH_MIN_REACH, "reach_max": CATCH_MAX_REACH,
@@ -1435,6 +1465,9 @@ def main():
     client = NatNetClient(server_ip_address=args.server_ip, local_ip_address=args.local_ip,
                           use_multicast=not args.unicast)
     client.on_data_frame_received_event.handlers.append(make_handler(s, args))
+    rb_state = BaseRBState()
+    if base_rb_mode:
+        client.on_data_frame_received_event.handlers.append(make_base_rb_handler(rb_state, base_rb_id))
 
     last_state = "idle"
     attempted = False           # fired a catch for the current throw already
@@ -1562,6 +1595,18 @@ def main():
                     state = s.state
                     flight_buffer = list(s.flight_buffer)
                     history_head = s.history[0] if s.history else None
+
+                # EXPERIMENTAL (--base-rb-transform, 2026-07-23): recompute base<-mocap
+                # from the base rigid body's LIVE pose instead of the static R/t loaded
+                # at startup. If the RB isn't valid this tick (occlusion), deliberately
+                # keep the last-good R/t rather than falling back to something - going
+                # stale-but-consistent for one tick is safer than a discontinuous jump.
+                if base_rb_mode:
+                    with BASE_RB_LOCK:
+                        rb_pos, rb_rot, rb_valid = rb_state.latest_pos, rb_state.latest_rot, rb_state.latest_valid
+                    if rb_valid:
+                        R_mocap_rb = quat_to_matrix(rb_rot)
+                        R, t_vec = base_from_mocap_via_rigid_body(R_base_rb, t_base_rb, R_mocap_rb, np.array(rb_pos))
 
                 if target_id is None:
                     if candidate_ids:

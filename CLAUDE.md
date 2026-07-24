@@ -5,6 +5,27 @@ ends) see `docs/debug_log.md` - it's not auto-loaded, so consult it deliberately
 you need the full story rather than duplicating it here. Keep this file to current,
 load-bearing state only.
 
+## Response style
+
+Responses must be information-dense but easily understandable: plain words over
+jargon, no restating the same point twice unless it's the single most important
+thing to land. User reads many responses a day — every word costs their time.
+Prefer short, direct sentences over heavy bolding/headers/bullet-storms for
+what could be one clean paragraph.
+
+## Debugging
+
+Default to high agency when debugging. The UR12e and Motive are almost always both
+live and reachable over Ethernet during a work session — check directly instead of
+listing hypotheses first. If a question ("how many markers are visible", "is this
+rigid body resolving", "is the transform's error real") can be answered by a quick
+script against a live connection (a NatNet probe, `live_view.py`, `--list-markers`,
+`rtde_receive`, `ur_status.py`, etc.), run it immediately rather than reasoning from
+logs/memory alone or asking the user to go check. This is scoped to read-only
+diagnosis — it doesn't extend to making changes (config, calibration, code, robot
+motion): those still get proposed and confirmed first, per the safety norms
+elsewhere in this file (see the dry-run judgment call under Robot Control).
+
 ## Git
 
 **Never `git push` unless explicitly instructed in that conversation** — a prior

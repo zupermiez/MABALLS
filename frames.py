@@ -131,6 +131,59 @@ def fit_transform_with_tool_offset(
     return R, t, d, rmse
 
 
+def quat_to_matrix(q) -> np.ndarray:
+    """NatNet rigid-body rotation (qx, qy, qz, qw) -> 3x3 rotation matrix."""
+    q = np.asarray(q, dtype=float)
+    q = q / np.linalg.norm(q)
+    x, y, z, w = q
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w)],
+        [2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)],
+    ])
+
+
+def compose_base_from_rigid_body(
+    R_base_mocap: np.ndarray, t_base_mocap: np.ndarray,
+    R_mocap_rb: np.ndarray, t_mocap_rb: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Fold a base-mounted rigid body's pose into the existing base<-mocap
+    calibration to get base<-RB: the fixed offset from the RB's local frame to
+    the robot base frame. Unlike base<-mocap, this is invariant to where the
+    whole rig sits in the mocap volume, since the RB never moves relative to
+    the base (see CLAUDE.md "Catch Integration" - moving the rig without
+    recalibrating). Call once, at calibration time, with the RB's pose
+    averaged over a stationary capture window (calibrate_base_rb.py).
+
+        p_base = R_base_mocap @ p_mocap + t_base_mocap
+        p_mocap = R_mocap_rb @ p_rb + t_mocap_rb
+        => p_base = (R_base_mocap @ R_mocap_rb) @ p_rb + (R_base_mocap @ t_mocap_rb + t_base_mocap)
+    """
+    R = R_base_mocap @ R_mocap_rb
+    t = R_base_mocap @ t_mocap_rb + t_base_mocap
+    return R, t
+
+
+def base_from_mocap_via_rigid_body(
+    R_base_rb: np.ndarray, t_base_rb: np.ndarray,
+    R_mocap_rb: np.ndarray, t_mocap_rb: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Inverse of compose_base_from_rigid_body(): given the fixed base<-RB
+    offset and the RB's LIVE pose in mocap this tick, recover base<-mocap for
+    this tick. This is the runtime side - call every tick with the base RB's
+    current NatNet pose to get a base<-mocap transform that self-updates as
+    the rig moves, instead of loading a static one.
+
+        p_rb = R_mocap_rb^T @ (p_mocap - t_mocap_rb)
+        p_base = R_base_rb @ p_rb + t_base_rb
+        => p_base = (R_base_rb @ R_mocap_rb^T) @ p_mocap + (t_base_rb - R_base_rb @ R_mocap_rb^T @ t_mocap_rb)
+    """
+    R_mocap_rb_T = R_mocap_rb.T
+    R = R_base_rb @ R_mocap_rb_T
+    t = t_base_rb - R @ t_mocap_rb
+    return R, t
+
+
 def mocap_point_to_base(p_mocap: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
     """Transform mocap-frame point(s) into base-frame.
 
@@ -231,5 +284,26 @@ if __name__ == "__main__":
     assert rmse_fit < 0.003, f"joint solve rmse too large ({rmse_fit:.5f} m)"
     assert np.linalg.norm(d_fit - d_true) < 0.005, "recovered tool offset doesn't match ground truth"
     assert np.max(np.abs(R_fit - R_true)) < 0.01, "joint solve rotation doesn't match ground truth"
+
+    # 6) Base-rigid-body composition round-trip: compose_base_from_rigid_body()
+    # followed by base_from_mocap_via_rigid_body() with the SAME rb pose must
+    # exactly recover the original base<-mocap transform (this only checks the
+    # algebra is self-consistent, not that quat_to_matrix's assumed NatNet
+    # (x,y,z,w) quaternion order is physically correct - that needs a live
+    # check against a second, independent measurement).
+    R_bm, t_bm = _random_rotation(rng), rng.uniform(-2.0, 2.0, size=3)
+    R_mr, t_mr = _random_rotation(rng), rng.uniform(-2.0, 2.0, size=3)
+    R_br, t_br = compose_base_from_rigid_body(R_bm, t_bm, R_mr, t_mr)
+    R_bm2, t_bm2 = base_from_mocap_via_rigid_body(R_br, t_br, R_mr, t_mr)
+    assert np.max(np.abs(R_bm2 - R_bm)) < 1e-10, "base-RB round trip: rotation mismatch"
+    assert np.max(np.abs(t_bm2 - t_bm)) < 1e-10, "base-RB round trip: translation mismatch"
+    print("[base-RB composition round trip] OK")
+
+    # 7) quat_to_matrix against a known quaternion (90 degrees about Z: qx,qy,qz,qw).
+    q90z = np.array([0.0, 0.0, np.sin(np.pi / 4), np.cos(np.pi / 4)])
+    R90z = quat_to_matrix(q90z)
+    expected = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    assert np.max(np.abs(R90z - expected)) < 1e-10, "quat_to_matrix: 90deg-about-Z mismatch"
+    print("[quat_to_matrix] OK")
 
     print("\nself-test passed")

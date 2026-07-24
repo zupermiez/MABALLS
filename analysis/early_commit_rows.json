@@ -1,0 +1,4490 @@
+{
+ "pre": [
+  {
+   "session": "20260721_132026",
+   "throw": 1,
+   "verdict": "possible",
+   "target_xy": [
+    0.186,
+    -0.827
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3678,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 2,
+   "verdict": "possible",
+   "target_xy": [
+    0.2807,
+    -0.723
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7648,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 5,
+   "verdict": "catch",
+   "target_xy": [
+    0.0466,
+    -0.7529
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8474,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 7,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0294,
+    -0.7422
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4291,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 10,
+   "verdict": "catch",
+   "target_xy": [
+    0.021,
+    -0.8603
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4582,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 11,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0954,
+    -0.7513
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5245,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 12,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1176,
+    -0.9883
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2939,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 13,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0566,
+    -0.672
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.0285,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 14,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2204,
+    -0.9601
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.4278,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0574,
+    -0.7474
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5958,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 17,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0748,
+    -0.6279
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 41,
+   "peak_speed": 4.4712,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 18,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1747,
+    -0.655
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7627,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 20,
+   "verdict": "catch",
+   "target_xy": [
+    0.047,
+    -0.5284
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7983,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_132026",
+   "throw": 22,
+   "verdict": "possible",
+   "target_xy": [
+    0.19,
+    -0.8642
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5317,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 1,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1127,
+    -0.8352
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.824,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 3,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1844,
+    -0.998
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 6.6226,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 4,
+   "verdict": "catch",
+   "target_xy": [
+    0.1746,
+    -0.871
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6926,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 6,
+   "verdict": "possible",
+   "target_xy": [
+    0.2028,
+    -1.0078
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.9604,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 9,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0952,
+    -0.6985
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7345,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 10,
+   "verdict": "possible",
+   "target_xy": [
+    -0.3546,
+    -0.5661
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.7239,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 11,
+   "verdict": "catch",
+   "target_xy": [
+    -0.046,
+    -0.8218
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6297,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 12,
+   "verdict": "possible",
+   "target_xy": [
+    -0.208,
+    -0.9201
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.9167,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 13,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1081,
+    -0.8566
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8322,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 14,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2881,
+    -0.82
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.042,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0037,
+    -0.8633
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8572,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 18,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2292,
+    -0.8429
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8989,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 19,
+   "verdict": "catch",
+   "target_xy": [
+    0.1001,
+    -0.8209
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.33,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_133840",
+   "throw": 21,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1545,
+    -0.7974
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.2357,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 1,
+   "verdict": "possible",
+   "target_xy": [
+    0.0245,
+    -0.8391
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.0357,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 2,
+   "verdict": "possible",
+   "target_xy": [
+    0.3013,
+    -0.8324
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 41,
+   "peak_speed": 4.4988,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 4,
+   "verdict": "catch",
+   "target_xy": [
+    0.0686,
+    -0.8666
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5698,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 5,
+   "verdict": "catch",
+   "target_xy": [
+    0.1967,
+    -0.6507
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.7587,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 6,
+   "verdict": "catch",
+   "target_xy": [
+    0.2443,
+    -0.8179
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.5416,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 7,
+   "verdict": "catch",
+   "target_xy": [
+    0.1011,
+    -0.9296
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.1363,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 8,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0659,
+    -0.8222
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.9911,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 9,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1076,
+    -0.7788
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.9546,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 11,
+   "verdict": "possible",
+   "target_xy": [
+    0.2722,
+    -0.6667
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8193,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 12,
+   "verdict": "catch",
+   "target_xy": [
+    0.0408,
+    -0.9189
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7424,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 13,
+   "verdict": "catch",
+   "target_xy": [
+    0.26,
+    -0.667
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.6638,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 14,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2943,
+    -0.7343
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.5739,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    0.0844,
+    -0.6918
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8014,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 16,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0457,
+    -0.657
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.5451,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 18,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2868,
+    -0.9383
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6581,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 19,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0305,
+    -0.8749
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.9521,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_135848",
+   "throw": 20,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0089,
+    -0.8107
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8628,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 1,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0712,
+    -0.9214
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6639,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 2,
+   "verdict": "catch",
+   "target_xy": [
+    0.1715,
+    -0.6643
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3721,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 3,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0961,
+    -0.9173
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.3842,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 5,
+   "verdict": "possible",
+   "target_xy": [
+    -0.235,
+    -0.8202
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.6052,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 6,
+   "verdict": "possible",
+   "target_xy": [
+    0.2962,
+    -0.8296
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 41,
+   "peak_speed": 4.7486,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 7,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1622,
+    -0.8767
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2144,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 8,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0981,
+    -0.7973
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.213,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 9,
+   "verdict": "catch",
+   "target_xy": [
+    0.0791,
+    -0.8756
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7666,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 10,
+   "verdict": "possible",
+   "target_xy": [
+    0.2347,
+    -0.8706
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.6237,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 13,
+   "verdict": "catch",
+   "target_xy": [
+    0.0788,
+    -0.8821
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6249,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 14,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2679,
+    -0.8568
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6886,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    0.0376,
+    -0.723
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5338,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_152445",
+   "throw": 17,
+   "verdict": "possible",
+   "target_xy": [
+    -0.203,
+    -0.8132
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.5473,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 1,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1087,
+    -0.9161
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4818,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 2,
+   "verdict": "catch",
+   "target_xy": [
+    0.1435,
+    -0.7081
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5255,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 7,
+   "verdict": "possible",
+   "target_xy": [
+    0.3145,
+    -0.6024
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.5661,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 8,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1444,
+    -0.8888
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.9689,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 9,
+   "verdict": "possible",
+   "target_xy": [
+    0.3466,
+    -0.7569
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 5.0017,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 10,
+   "verdict": "possible",
+   "target_xy": [
+    0.2711,
+    -0.7693
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 5.0972,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 12,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0721,
+    -0.8761
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.1487,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 13,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1467,
+    -0.8343
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.3844,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 14,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1369,
+    -0.6859
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8727,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 16,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2312,
+    -0.8273
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.2243,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 22,
+   "verdict": "catch",
+   "target_xy": [
+    -0.05,
+    -0.8128
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.2371,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 24,
+   "verdict": "catch",
+   "target_xy": [
+    0.0638,
+    -0.7524
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3197,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 25,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2379,
+    -0.7687
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 3.9578,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 26,
+   "verdict": "possible",
+   "target_xy": [
+    0.2303,
+    -0.8031
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3434,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 27,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1065,
+    -0.6252
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 3.9559,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_154318",
+   "throw": 31,
+   "verdict": "possible",
+   "target_xy": [
+    -0.058,
+    -0.8141
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.1928,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 2,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1407,
+    -0.7821
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 41,
+   "peak_speed": 4.1759,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 3,
+   "verdict": "catch",
+   "target_xy": [
+    0.1594,
+    -0.8406
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5945,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 4,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0348,
+    -0.8227
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7541,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 5,
+   "verdict": "possible",
+   "target_xy": [
+    0.2704,
+    -0.7766
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.9212,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 6,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1045,
+    -0.9309
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.583,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 7,
+   "verdict": "catch",
+   "target_xy": [
+    0.1104,
+    -0.8624
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5152,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 8,
+   "verdict": "catch",
+   "target_xy": [
+    0.0289,
+    -0.6474
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.596,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 9,
+   "verdict": "catch",
+   "target_xy": [
+    0.0848,
+    -0.8393
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4863,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 10,
+   "verdict": "possible",
+   "target_xy": [
+    0.0677,
+    -0.952
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.628,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 11,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0778,
+    -0.8543
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2752,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 14,
+   "verdict": "catch",
+   "target_xy": [
+    0.0819,
+    -0.864
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7976,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 16,
+   "verdict": "catch",
+   "target_xy": [
+    0.034,
+    -0.7732
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 41,
+   "peak_speed": 4.5192,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 18,
+   "verdict": "possible",
+   "target_xy": [
+    0.242,
+    -0.6017
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 50,
+   "peak_speed": 5.0832,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 19,
+   "verdict": "possible",
+   "target_xy": [
+    0.3462,
+    -0.902
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8186,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 20,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1627,
+    -0.818
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 41,
+   "peak_speed": 4.709,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 21,
+   "verdict": "catch",
+   "target_xy": [
+    0.2708,
+    -0.7861
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.764,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161131",
+   "throw": 22,
+   "verdict": "possible",
+   "target_xy": [
+    -0.3363,
+    -0.7301
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 7.1752,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161748",
+   "throw": 1,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0275,
+    -0.9072
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 41,
+   "peak_speed": 4.6015,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161748",
+   "throw": 5,
+   "verdict": "catch",
+   "target_xy": [
+    0.053,
+    -0.8132
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.228,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161748",
+   "throw": 6,
+   "verdict": "possible",
+   "target_xy": [
+    0.1879,
+    -0.9023
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6898,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_161748",
+   "throw": 7,
+   "verdict": "possible",
+   "target_xy": [
+    -0.054,
+    -0.9447
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6352,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 1,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2683,
+    -0.6731
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.7397,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 5,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1368,
+    -0.8501
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.0365,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 6,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0054,
+    -0.7089
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3142,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 8,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0815,
+    -0.9929
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4129,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 9,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1629,
+    -0.8531
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4593,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 10,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2404,
+    -0.7058
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.8976,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 11,
+   "verdict": "possible",
+   "target_xy": [
+    -0.181,
+    -0.6602
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.4129,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 13,
+   "verdict": "possible",
+   "target_xy": [
+    0.0556,
+    -0.8755
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.347,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 15,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0986,
+    -0.9282
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.3882,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 16,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2954,
+    -0.8835
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2742,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 20,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2538,
+    -0.7046
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.403,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 22,
+   "verdict": "catch",
+   "target_xy": [
+    0.0976,
+    -0.8508
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.4386,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 23,
+   "verdict": "possible",
+   "target_xy": [
+    0.3018,
+    -0.7901
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 3.9952,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 24,
+   "verdict": "possible",
+   "target_xy": [
+    0.0674,
+    -0.9752
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.212,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 26,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0519,
+    -0.6332
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6658,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 27,
+   "verdict": "catch",
+   "target_xy": [
+    0.0322,
+    -0.7372
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.0843,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 29,
+   "verdict": "catch",
+   "target_xy": [
+    -0.035,
+    -0.5514
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.2309,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 30,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1414,
+    -0.5357
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4252,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 31,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0252,
+    -0.7054
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3726,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_164310",
+   "throw": 33,
+   "verdict": "catch",
+   "target_xy": [
+    -0.4739,
+    -0.6733
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 90,
+   "peak_speed": 7.5763,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 1,
+   "verdict": "catch",
+   "target_xy": [
+    0.1616,
+    -0.6821
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5344,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 2,
+   "verdict": "possible",
+   "target_xy": [
+    0.2993,
+    -0.921
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5199,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 3,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0071,
+    -0.8874
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5178,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 4,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2354,
+    -0.7046
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.2954,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 5,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2691,
+    -0.7362
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.2838,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 6,
+   "verdict": "possible",
+   "target_xy": [
+    0.2777,
+    -0.8882
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6632,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 7,
+   "verdict": "possible",
+   "target_xy": [
+    -0.036,
+    -0.8486
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.0978,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 8,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0914,
+    -0.9067
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8268,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 10,
+   "verdict": "possible",
+   "target_xy": [
+    0.2597,
+    -0.8579
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.795,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 11,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0037,
+    -0.8175
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6464,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    0.0717,
+    -0.9591
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.044,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 16,
+   "verdict": "possible",
+   "target_xy": [
+    -0.279,
+    -0.8074
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 7.7859,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 17,
+   "verdict": "catch",
+   "target_xy": [
+    -0.069,
+    -0.7364
+   ],
+   "caught": false,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 5.0066,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 18,
+   "verdict": "catch",
+   "target_xy": [
+    0.0339,
+    -0.6916
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2117,
+   "reaims": 0
+  },
+  {
+   "session": "20260721_173828",
+   "throw": 19,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1544,
+    -0.8095
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 3.7494,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_105903",
+   "throw": 1,
+   "verdict": "catch",
+   "target_xy": [
+    0.0104,
+    -0.8091
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5188,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_105903",
+   "throw": 2,
+   "verdict": "catch",
+   "target_xy": [
+    0.1511,
+    -0.9128
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.3284,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_105903",
+   "throw": 3,
+   "verdict": "possible",
+   "target_xy": [
+    0.2195,
+    -0.7631
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 41,
+   "peak_speed": 4.7529,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_105903",
+   "throw": 5,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2317,
+    -0.7339
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.6047,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_105903",
+   "throw": 6,
+   "verdict": "catch",
+   "target_xy": [
+    0.009,
+    -0.812
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5651,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_105903",
+   "throw": 7,
+   "verdict": "catch",
+   "target_xy": [
+    0.0653,
+    -0.5792
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.2822,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 1,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0248,
+    -0.8585
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2783,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 2,
+   "verdict": "catch",
+   "target_xy": [
+    0.2159,
+    -0.6272
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.0198,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 3,
+   "verdict": "catch",
+   "target_xy": [
+    0.0064,
+    -0.838
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3871,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 5,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0759,
+    -0.7801
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5004,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 6,
+   "verdict": "catch",
+   "target_xy": [
+    0.015,
+    -0.8198
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7071,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 7,
+   "verdict": "catch",
+   "target_xy": [
+    0.0391,
+    -0.698
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6133,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 8,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1764,
+    -0.8732
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.606,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 9,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0732,
+    -0.7203
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.5692,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 11,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2806,
+    -0.8596
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.4951,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 12,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2855,
+    -0.8172
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.4714,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 13,
+   "verdict": "possible",
+   "target_xy": [
+    -0.3486,
+    -0.8379
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.5343,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 14,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0477,
+    -0.7777
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5632,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0065,
+    -0.7653
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4989,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 16,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0554,
+    -1.0085
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.9481,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 17,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0956,
+    -0.832
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6774,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 18,
+   "verdict": "catch",
+   "target_xy": [
+    0.1885,
+    -0.8064
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 5.2897,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 22,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1285,
+    -0.7247
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4987,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 23,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1037,
+    -0.7997
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.7589,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 24,
+   "verdict": "catch",
+   "target_xy": [
+    0.0247,
+    -0.7519
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6109,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 25,
+   "verdict": "catch",
+   "target_xy": [
+    0.0264,
+    -0.7572
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.4476,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_111640",
+   "throw": 26,
+   "verdict": "possible",
+   "target_xy": [
+    0.2862,
+    -0.7979
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.5783,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 1,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0564,
+    -0.7808
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.482,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 3,
+   "verdict": "possible",
+   "target_xy": [
+    0.0807,
+    -0.8585
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.1858,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 4,
+   "verdict": "catch",
+   "target_xy": [
+    0.1254,
+    -0.8368
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6651,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 5,
+   "verdict": "catch",
+   "target_xy": [
+    0.0286,
+    -0.6894
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3796,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 6,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1661,
+    -0.9269
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.5259,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 8,
+   "verdict": "catch",
+   "target_xy": [
+    0.0511,
+    -0.6079
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5086,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 9,
+   "verdict": "catch",
+   "target_xy": [
+    -0.117,
+    -0.6097
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.2253,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 10,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0433,
+    -0.961
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8448,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 13,
+   "verdict": "possible",
+   "target_xy": [
+    0.085,
+    -0.9867
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 5.1949,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 14,
+   "verdict": "catch",
+   "target_xy": [
+    -0.2587,
+    -0.623
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 5.3174,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 15,
+   "verdict": "possible",
+   "target_xy": [
+    -0.307,
+    -0.9281
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.9521,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 17,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1106,
+    -0.7914
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 41,
+   "peak_speed": 5.1572,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 19,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0095,
+    -0.7607
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6467,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_113113",
+   "throw": 21,
+   "verdict": "possible",
+   "target_xy": [
+    -0.156,
+    -0.9356
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6378,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 1,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2041,
+    -0.9981
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8882,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 2,
+   "verdict": "catch",
+   "target_xy": [
+    0.0062,
+    -0.8434
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2072,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 3,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1596,
+    -0.6184
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.0255,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 4,
+   "verdict": "possible",
+   "target_xy": [
+    -0.174,
+    -0.7759
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 3.8766,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 6,
+   "verdict": "possible",
+   "target_xy": [
+    0.1059,
+    -0.9087
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2917,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 9,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0009,
+    -0.8429
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.0469,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 10,
+   "verdict": "catch",
+   "target_xy": [
+    0.0925,
+    -0.7868
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2363,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 11,
+   "verdict": "catch",
+   "target_xy": [
+    0.0818,
+    -0.6353
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3399,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 12,
+   "verdict": "possible",
+   "target_xy": [
+    0.3008,
+    -0.7939
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.7865,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0457,
+    -0.873
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.6377,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 16,
+   "verdict": "catch",
+   "target_xy": [
+    0.0032,
+    -0.8476
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3355,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 17,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0851,
+    -0.8954
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.0464,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 19,
+   "verdict": "possible",
+   "target_xy": [
+    -0.085,
+    -0.9055
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.1346,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 20,
+   "verdict": "possible",
+   "target_xy": [
+    0.2941,
+    -0.7987
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.3668,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 21,
+   "verdict": "catch",
+   "target_xy": [
+    0.1038,
+    -0.7161
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.345,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 23,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0892,
+    -0.7144
+   ],
+   "caught": true,
+   "faulted_near": true,
+   "n_commit": 40,
+   "peak_speed": 4.2273,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 24,
+   "verdict": "catch",
+   "target_xy": [
+    0.0546,
+    -0.7921
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.244,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 25,
+   "verdict": "catch",
+   "target_xy": [
+    0.104,
+    -0.76
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2582,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 27,
+   "verdict": "possible",
+   "target_xy": [
+    0.0006,
+    -0.9011
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2684,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 28,
+   "verdict": "catch",
+   "target_xy": [
+    0.1602,
+    -0.7425
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.8091,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 29,
+   "verdict": "catch",
+   "target_xy": [
+    0.093,
+    -0.8218
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 41,
+   "peak_speed": 4.305,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 31,
+   "verdict": "catch",
+   "target_xy": [
+    0.124,
+    -0.7505
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.5306,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_114222",
+   "throw": 33,
+   "verdict": "possible",
+   "target_xy": [
+    -0.107,
+    -0.8351
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 40,
+   "peak_speed": 4.2292,
+   "reaims": 0
+  }
+ ],
+ "post": [
+  {
+   "session": "20260722_140544",
+   "throw": 1,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1852,
+    -0.9052
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.0548,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 2,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1764,
+    -1.0951
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 4.446,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 3,
+   "verdict": "early",
+   "target_xy": [
+    -0.4184,
+    -1.0587
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.397,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 4,
+   "verdict": "possible",
+   "target_xy": [
+    0.7172,
+    -0.6921
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.3461,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 6,
+   "verdict": "early",
+   "target_xy": [
+    -0.4545,
+    -0.1629
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 7.2567,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 7,
+   "verdict": "catch",
+   "target_xy": [
+    -0.2735,
+    -0.9388
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.3519,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 8,
+   "verdict": "catch",
+   "target_xy": [
+    -0.3944,
+    -0.7307
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 4.4646,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 9,
+   "verdict": "catch",
+   "target_xy": [
+    -0.2444,
+    -0.663
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 4.561,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 11,
+   "verdict": "catch",
+   "target_xy": [
+    -0.2687,
+    -0.9614
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.5884,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_140544",
+   "throw": 13,
+   "verdict": "catch",
+   "target_xy": [
+    0.0108,
+    -0.9078
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.8333,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 1,
+   "verdict": "catch",
+   "target_xy": [
+    0.1928,
+    -0.8853
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 4.6544,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 2,
+   "verdict": "catch",
+   "target_xy": [
+    0.1018,
+    -1.1773
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.3037,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 3,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2529,
+    -1.146
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 4.8269,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 4,
+   "verdict": "catch",
+   "target_xy": [
+    0.0982,
+    -0.7446
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.7735,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 5,
+   "verdict": "possible",
+   "target_xy": [
+    -0.4743,
+    -1.0869
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.9852,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 6,
+   "verdict": "catch",
+   "target_xy": [
+    0.1688,
+    -1.172
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 4.2852,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 7,
+   "verdict": "catch",
+   "target_xy": [
+    0.2504,
+    -1.1326
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.0094,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 8,
+   "verdict": "possible",
+   "target_xy": [
+    -0.2381,
+    -1.1445
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 4.3474,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 9,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1933,
+    -1.1635
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 4.1702,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 10,
+   "verdict": "catch",
+   "target_xy": [
+    0.2184,
+    -0.7077
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.3283,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 11,
+   "verdict": "early",
+   "target_xy": [
+    -0.8304,
+    -0.7668
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 15,
+   "peak_speed": 4.517,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 12,
+   "verdict": "early",
+   "target_xy": [
+    0.4072,
+    -1.0988
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 14,
+   "peak_speed": 4.6123,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 13,
+   "verdict": "catch",
+   "target_xy": [
+    -0.3265,
+    -0.6163
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.5039,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 14,
+   "verdict": "early",
+   "target_xy": [
+    0.9508,
+    -0.6332
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.659,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    0.0046,
+    -0.618
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.4383,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 16,
+   "verdict": "early",
+   "target_xy": [
+    -0.6573,
+    -0.9281
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.4932,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 17,
+   "verdict": "early",
+   "target_xy": [
+    0.6962,
+    -0.4631
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 6.2592,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 18,
+   "verdict": "early",
+   "target_xy": [
+    0.2818,
+    -0.3501
+   ],
+   "caught": false,
+   "faulted_near": true,
+   "n_commit": 10,
+   "peak_speed": 6.5898,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 20,
+   "verdict": "catch",
+   "target_xy": [
+    -0.333,
+    -0.7851
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 5.4273,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 21,
+   "verdict": "early",
+   "target_xy": [
+    -0.5472,
+    -0.8283
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 7.0535,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 22,
+   "verdict": "possible",
+   "target_xy": [
+    -0.3075,
+    -1.0794
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.5128,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 23,
+   "verdict": "catch",
+   "target_xy": [
+    0.174,
+    -0.5433
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.4734,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 24,
+   "verdict": "early",
+   "target_xy": [
+    0.8837,
+    -0.7185
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 4.6596,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 26,
+   "verdict": "catch",
+   "target_xy": [
+    -0.673,
+    -0.5643
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 6.7102,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 27,
+   "verdict": "early",
+   "target_xy": [
+    -0.276,
+    -0.7697
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 7.2637,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 28,
+   "verdict": "early",
+   "target_xy": [
+    -0.3171,
+    -0.8277
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.6855,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_164459",
+   "throw": 30,
+   "verdict": "possible",
+   "target_xy": [
+    0.2822,
+    -0.7247
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.0183,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_173719",
+   "throw": 1,
+   "verdict": "early",
+   "target_xy": [
+    0.5691,
+    -0.7179
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 3.2962,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_173904",
+   "throw": 1,
+   "verdict": "early",
+   "target_xy": [
+    -0.5641,
+    -0.936
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.7166,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_173904",
+   "throw": 3,
+   "verdict": "catch",
+   "target_xy": [
+    -0.3431,
+    -0.7601
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.7229,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_173904",
+   "throw": 5,
+   "verdict": "early",
+   "target_xy": [
+    -0.3304,
+    -0.8535
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.4939,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_173904",
+   "throw": 8,
+   "verdict": "early",
+   "target_xy": [
+    -0.0697,
+    -0.9334
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.7835,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_173904",
+   "throw": 9,
+   "verdict": "possible",
+   "target_xy": [
+    -0.4787,
+    -0.6593
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.8499,
+   "reaims": 0
+  },
+  {
+   "session": "20260722_173904",
+   "throw": 11,
+   "verdict": "early",
+   "target_xy": [
+    -0.275,
+    -0.8694
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 6.1724,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 1,
+   "verdict": "catch",
+   "target_xy": [
+    0.0182,
+    -0.6928
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 11.2731,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 2,
+   "verdict": "possible",
+   "target_xy": [
+    -0.3712,
+    -0.4769
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 4.1484,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 3,
+   "verdict": "possible",
+   "target_xy": [
+    -0.477,
+    -0.9533
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 4.7755,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 4,
+   "verdict": "catch",
+   "target_xy": [
+    -0.372,
+    -1.0899
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 5.04,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 5,
+   "verdict": "catch",
+   "target_xy": [
+    -0.2249,
+    -0.4013
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.3833,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 6,
+   "verdict": "early",
+   "target_xy": [
+    -0.1447,
+    -1.0152
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 7.3632,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 7,
+   "verdict": "possible",
+   "target_xy": [
+    0.396,
+    -1.1105
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 12,
+   "peak_speed": 4.9334,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 8,
+   "verdict": "catch",
+   "target_xy": [
+    0.3717,
+    -0.8163
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 10,
+   "peak_speed": 8.1338,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 9,
+   "verdict": "early",
+   "target_xy": [
+    -0.9472,
+    -0.6734
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 13,
+   "peak_speed": 8.627,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 10,
+   "verdict": "possible",
+   "target_xy": [
+    -0.0343,
+    -1.178
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 21,
+   "peak_speed": 4.7326,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 11,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1698,
+    -1.065
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 22,
+   "peak_speed": 6.8899,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 12,
+   "verdict": "early",
+   "target_xy": [
+    -0.7107,
+    -0.8873
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.1958,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 13,
+   "verdict": "possible",
+   "target_xy": [
+    -0.4167,
+    -0.6764
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.5759,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 14,
+   "verdict": "catch",
+   "target_xy": [
+    -0.0489,
+    -1.0141
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 5.2127,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 15,
+   "verdict": "possible",
+   "target_xy": [
+    -0.1447,
+    -1.1604
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.5649,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 16,
+   "verdict": "early",
+   "target_xy": [
+    -0.7531,
+    -0.8858
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 25,
+   "peak_speed": 4.2338,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 17,
+   "verdict": "early",
+   "target_xy": [
+    -0.5891,
+    -0.9647
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 22.9883,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 18,
+   "verdict": "possible",
+   "target_xy": [
+    -0.4636,
+    -0.4309
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 14,
+   "peak_speed": 14.8223,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 19,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1469,
+    -0.4938
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 13,
+   "peak_speed": 4.859,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 20,
+   "verdict": "possible",
+   "target_xy": [
+    -0.4461,
+    -0.5478
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 11,
+   "peak_speed": 18.3725,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 21,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1501,
+    -0.4607
+   ],
+   "caught": null,
+   "faulted_near": true,
+   "n_commit": 10,
+   "peak_speed": 9.5092,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_103647",
+   "throw": 22,
+   "verdict": "early",
+   "target_xy": [
+    -0.4213,
+    -0.4814
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.5148,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 1,
+   "verdict": "catch",
+   "target_xy": [
+    0.1614,
+    -1.1805
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 20,
+   "peak_speed": 7.09,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 2,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1907,
+    -0.959
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 13,
+   "peak_speed": 4.8298,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 3,
+   "verdict": "early",
+   "target_xy": [
+    -0.7457,
+    -0.8878
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 7.5469,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 4,
+   "verdict": "early",
+   "target_xy": [
+    -0.371,
+    -0.8757
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 7.6513,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 5,
+   "verdict": "early",
+   "target_xy": [
+    -0.2438,
+    -1.157
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 28,
+   "peak_speed": 4.561,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 6,
+   "verdict": "early",
+   "target_xy": [
+    0.5699,
+    -0.2211
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 4.5046,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 8,
+   "verdict": "possible",
+   "target_xy": [
+    -0.3237,
+    -1.1389
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 18,
+   "peak_speed": 5.4724,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 9,
+   "verdict": "early",
+   "target_xy": [
+    -0.065,
+    -0.8315
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.1357,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 10,
+   "verdict": "early",
+   "target_xy": [
+    0.8363,
+    -0.3244
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 17,
+   "peak_speed": 5.4175,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 11,
+   "verdict": "early",
+   "target_xy": [
+    -0.2739,
+    -0.7385
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 9.1659,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 12,
+   "verdict": "early",
+   "target_xy": [
+    0.6327,
+    -0.1601
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 5.1029,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 13,
+   "verdict": "early",
+   "target_xy": [
+    -0.6857,
+    -0.7277
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 14,
+   "peak_speed": 17.3757,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 14,
+   "verdict": "catch",
+   "target_xy": [
+    0.0971,
+    -1.1055
+   ],
+   "caught": true,
+   "faulted_near": false,
+   "n_commit": 11,
+   "peak_speed": 4.6654,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 15,
+   "verdict": "catch",
+   "target_xy": [
+    -0.1508,
+    -0.9054
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 18.5522,
+   "reaims": 0
+  },
+  {
+   "session": "20260723_105022",
+   "throw": 16,
+   "verdict": "catch",
+   "target_xy": [
+    0.2118,
+    -1.1309
+   ],
+   "caught": false,
+   "faulted_near": false,
+   "n_commit": 10,
+   "peak_speed": 8.6411,
+   "reaims": 0
+  }
+ ],
+ "pre_faults": [
+  {
+   "session": "20260721_135848",
+   "wall": 1784631570.163,
+   "robot_clock": 10251.159,
+   "t": null,
+   "throw": 2,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784631570.1634,
+   "last_known_normal_wall": 1784631569.8379,
+   "max_undetected_s": 0.3255,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_135848",
+   "wall": 1784631604.12,
+   "robot_clock": 10285.117,
+   "t": null,
+   "throw": 5,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784631604.1195,
+   "last_known_normal_wall": 1784631603.7917,
+   "max_undetected_s": 0.3278,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_135848",
+   "wall": 1784631692.817,
+   "robot_clock": 10373.813,
+   "t": null,
+   "throw": 13,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784631692.8167,
+   "last_known_normal_wall": 1784631692.4874,
+   "max_undetected_s": 0.3293,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_135848",
+   "wall": 1784631704.44,
+   "robot_clock": 10385.437,
+   "t": null,
+   "throw": 14,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 4,
+   "detected_wall": 1784631704.4401,
+   "last_known_normal_wall": 1784631704.1119,
+   "max_undetected_s": 0.3282,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_152445",
+   "wall": 1784637224.735,
+   "robot_clock": 15906.071,
+   "t": null,
+   "throw": 5,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784637224.7354,
+   "last_known_normal_wall": 1784637224.4099,
+   "max_undetected_s": 0.3255,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_152445",
+   "wall": 1784637288.65,
+   "robot_clock": 15969.985,
+   "t": null,
+   "throw": 6,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784637288.6502,
+   "last_known_normal_wall": 1784637288.3246,
+   "max_undetected_s": 0.3256,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_152445",
+   "wall": 1784637354.883,
+   "robot_clock": 16036.217,
+   "t": null,
+   "throw": 10,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784637354.883,
+   "last_known_normal_wall": 1784637354.5568,
+   "max_undetected_s": 0.3262,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_152445",
+   "wall": 1784637420.888,
+   "robot_clock": 16102.223,
+   "t": null,
+   "throw": 17,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 4,
+   "detected_wall": 1784637420.8881,
+   "last_known_normal_wall": 1784637420.5622,
+   "max_undetected_s": 0.3259,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_154318",
+   "wall": 1784637879.2,
+   "robot_clock": 16560.161,
+   "t": null,
+   "throw": 7,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784637879.2001,
+   "last_known_normal_wall": 1784637878.8735,
+   "max_undetected_s": 0.3266,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_154318",
+   "wall": 1784637907.771,
+   "robot_clock": 16588.725,
+   "t": null,
+   "throw": 9,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784637907.7707,
+   "last_known_normal_wall": 1784637907.4446,
+   "max_undetected_s": 0.3261,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_154318",
+   "wall": 1784637969.675,
+   "robot_clock": 16650.633,
+   "t": null,
+   "throw": 10,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784637969.6754,
+   "last_known_normal_wall": 1784637969.3498,
+   "max_undetected_s": 0.3257,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_154318",
+   "wall": 1784638145.341,
+   "robot_clock": 16826.241,
+   "t": null,
+   "throw": 25,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 4,
+   "detected_wall": 1784638145.3406,
+   "last_known_normal_wall": 1784638145.0148,
+   "max_undetected_s": 0.3258,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_161131",
+   "wall": 1784639579.29,
+   "robot_clock": 18260.239,
+   "t": null,
+   "throw": 5,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784639579.2899,
+   "last_known_normal_wall": 1784639578.9644,
+   "max_undetected_s": 0.3254,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_161131",
+   "wall": 1784639754.173,
+   "robot_clock": 18435.117,
+   "t": null,
+   "throw": 22,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: ROBOT_EMERGENCY_STOP (dashboard) / rtde=7 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784639754.1732,
+   "last_known_normal_wall": 1784639753.8526,
+   "max_undetected_s": 0.3206,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_164310",
+   "wall": 1784641401.423,
+   "robot_clock": 20082.342,
+   "t": null,
+   "throw": 1,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784641401.423,
+   "last_known_normal_wall": 1784641401.094,
+   "max_undetected_s": 0.329,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_164310",
+   "wall": 1784641502.318,
+   "robot_clock": 20183.234,
+   "t": null,
+   "throw": 10,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784641502.3176,
+   "last_known_normal_wall": 1784641501.9895,
+   "max_undetected_s": 0.3281,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_164310",
+   "wall": 1784641513.836,
+   "robot_clock": 20194.75,
+   "t": null,
+   "throw": 11,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784641513.8358,
+   "last_known_normal_wall": 1784641513.5075,
+   "max_undetected_s": 0.3283,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_164310",
+   "wall": 1784641649.302,
+   "robot_clock": 20330.212,
+   "t": null,
+   "throw": 23,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 4,
+   "detected_wall": 1784641649.3023,
+   "last_known_normal_wall": 1784641648.9765,
+   "max_undetected_s": 0.3257,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_164310",
+   "wall": 1784641726.455,
+   "robot_clock": 20407.364,
+   "t": null,
+   "throw": 29,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 5,
+   "detected_wall": 1784641726.4554,
+   "last_known_normal_wall": 1784641726.1295,
+   "max_undetected_s": 0.3259,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_173828",
+   "wall": 1784644743.448,
+   "robot_clock": 23424.386,
+   "t": null,
+   "throw": 4,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784644743.4476,
+   "last_known_normal_wall": 1784644743.1194,
+   "max_undetected_s": 0.3282,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_173828",
+   "wall": 1784644753.473,
+   "robot_clock": 23434.412,
+   "t": null,
+   "throw": 5,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784644753.4727,
+   "last_known_normal_wall": 1784644753.1469,
+   "max_undetected_s": 0.3258,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_173828",
+   "wall": 1784644792.035,
+   "robot_clock": 23472.974,
+   "t": null,
+   "throw": 10,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784644792.0353,
+   "last_known_normal_wall": 1784644791.7091,
+   "max_undetected_s": 0.3262,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_173828",
+   "wall": 1784644881.029,
+   "robot_clock": 23561.97,
+   "t": null,
+   "throw": 16,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 4,
+   "detected_wall": 1784644881.0289,
+   "last_known_normal_wall": 1784644880.7038,
+   "max_undetected_s": 0.3251,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_173828",
+   "wall": 1784644890.853,
+   "robot_clock": 23571.794,
+   "t": null,
+   "throw": 17,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 5,
+   "detected_wall": 1784644890.8529,
+   "last_known_normal_wall": 1784644890.5274,
+   "max_undetected_s": 0.3254,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260721_173828",
+   "wall": 1784644917.701,
+   "robot_clock": 23598.642,
+   "t": null,
+   "throw": 19,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 6,
+   "detected_wall": 1784644917.7006,
+   "last_known_normal_wall": 1784644917.3747,
+   "max_undetected_s": 0.3259,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_105903",
+   "wall": 1784707166.651,
+   "robot_clock": 349.324,
+   "t": null,
+   "throw": 2,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784707166.6509,
+   "last_known_normal_wall": 1784707166.3229,
+   "max_undetected_s": 0.328,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_105903",
+   "wall": 1784707180.493,
+   "robot_clock": 363.166,
+   "t": null,
+   "throw": 3,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784707180.4934,
+   "last_known_normal_wall": 1784707180.1652,
+   "max_undetected_s": 0.3281,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_105903",
+   "wall": 1784707200.829,
+   "robot_clock": 383.502,
+   "t": null,
+   "throw": 5,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784707200.8294,
+   "last_known_normal_wall": 1784707200.5013,
+   "max_undetected_s": 0.3281,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_105903",
+   "wall": 1784707220.766,
+   "robot_clock": 403.438,
+   "t": null,
+   "throw": 7,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 4,
+   "detected_wall": 1784707220.7661,
+   "last_known_normal_wall": 1784707220.4395,
+   "max_undetected_s": 0.3266,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_111640",
+   "wall": 1784708281.065,
+   "robot_clock": 1463.726,
+   "t": null,
+   "throw": 9,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784708281.0652,
+   "last_known_normal_wall": 1784708280.7382,
+   "max_undetected_s": 0.327,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_111640",
+   "wall": 1784708308.617,
+   "robot_clock": 1491.276,
+   "t": null,
+   "throw": 11,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784708308.6166,
+   "last_known_normal_wall": 1784708308.2906,
+   "max_undetected_s": 0.3261,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_111640",
+   "wall": 1784708321.749,
+   "robot_clock": 1504.408,
+   "t": null,
+   "throw": 12,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784708321.7485,
+   "last_known_normal_wall": 1784708321.4215,
+   "max_undetected_s": 0.327,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_111640",
+   "wall": 1784708336.465,
+   "robot_clock": 1519.124,
+   "t": null,
+   "throw": 13,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 4,
+   "detected_wall": 1784708336.4646,
+   "last_known_normal_wall": 1784708336.1387,
+   "max_undetected_s": 0.3259,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_111640",
+   "wall": 1784708384.451,
+   "robot_clock": 1567.11,
+   "t": null,
+   "throw": 18,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 5,
+   "detected_wall": 1784708384.4513,
+   "last_known_normal_wall": 1784708384.1229,
+   "max_undetected_s": 0.3284,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_111640",
+   "wall": 1784708468.07,
+   "robot_clock": 1650.728,
+   "t": null,
+   "throw": 26,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 6,
+   "detected_wall": 1784708468.0696,
+   "last_known_normal_wall": 1784708467.7403,
+   "max_undetected_s": 0.3293,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_113113",
+   "wall": 1784709169.068,
+   "robot_clock": 2351.878,
+   "t": null,
+   "throw": 9,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784709169.0679,
+   "last_known_normal_wall": 1784709168.7404,
+   "max_undetected_s": 0.3275,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_113113",
+   "wall": 1784709240.9,
+   "robot_clock": 2423.714,
+   "t": null,
+   "throw": 14,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784709240.9,
+   "last_known_normal_wall": 1784709240.5714,
+   "max_undetected_s": 0.3287,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_114222",
+   "wall": 1784709772.74,
+   "robot_clock": 2955.564,
+   "t": null,
+   "throw": 3,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784709772.7401,
+   "last_known_normal_wall": 1784709772.4122,
+   "max_undetected_s": 0.3279,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_114222",
+   "wall": 1784709835.047,
+   "robot_clock": 3017.87,
+   "t": null,
+   "throw": 12,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784709835.0469,
+   "last_known_normal_wall": 1784709834.7195,
+   "max_undetected_s": 0.3274,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260722_114222",
+   "wall": 1784709946.235,
+   "robot_clock": 3129.054,
+   "t": null,
+   "throw": 23,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784709946.2349,
+   "last_known_normal_wall": 1784709945.9093,
+   "max_undetected_s": 0.3256,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  }
+ ],
+ "post_faults": [
+  {
+   "session": "20260722_164459",
+   "wall": 1784728098.127,
+   "robot_clock": 21280.871,
+   "t": null,
+   "throw": 18,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784728098.1271,
+   "last_known_normal_wall": 1784728097.7988,
+   "max_undetected_s": 0.3283,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260723_103647",
+   "wall": 1784792307.603,
+   "robot_clock": 1613.327,
+   "t": null,
+   "throw": 8,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 1,
+   "detected_wall": 1784792307.603,
+   "last_known_normal_wall": 1784792307.2747,
+   "max_undetected_s": 0.3282,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260723_103647",
+   "wall": 1784792469.353,
+   "robot_clock": 1774.915,
+   "t": null,
+   "throw": 19,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 2,
+   "detected_wall": 1784792469.353,
+   "last_known_normal_wall": 1784792469.0251,
+   "max_undetected_s": 0.3279,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260723_103647",
+   "wall": 1784792479.579,
+   "robot_clock": 1785.135,
+   "t": null,
+   "throw": 20,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 3,
+   "detected_wall": 1784792479.5792,
+   "last_known_normal_wall": 1784792479.2512,
+   "max_undetected_s": 0.328,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  },
+  {
+   "session": "20260723_103647",
+   "wall": 1784792493.012,
+   "robot_clock": 1798.563,
+   "t": null,
+   "throw": 21,
+   "ev": "fault",
+   "reason": "safety_mode=Safetymode: PROTECTIVE_STOP (dashboard) / rtde=3 - robot is stopped/faulted, not actually moving",
+   "fault_count": 4,
+   "detected_wall": 1784792493.0122,
+   "last_known_normal_wall": 1784792492.6842,
+   "max_undetected_s": 0.328,
+   "note": "fault actually started sometime in (last_known_normal_wall, detected_wall] - 'throw' above is whichever throw was current at DETECTION time, not necessarily the one that caused it"
+  }
+ ]
+}
