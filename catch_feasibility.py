@@ -239,6 +239,46 @@ class FeasibilityResult:
     note: Optional[str] = None
 
 
+def _solve_intercept(
+    flight_buffer: List[Sample],
+    catch_axis_idx: int,
+    catch_value: float,
+    R: np.ndarray,
+    t_vec: np.ndarray,
+    min_reach: float,
+    max_reach: float,
+) -> dict:
+    """The part of feasibility-checking that only changes when the ball fit does:
+    fit the trajectory, solve for the catch-plane crossing, and transform the
+    intercept point into the base frame. Split out of check_feasibility() so a
+    caller polling faster than new mocap samples arrive (Motive tops out at
+    120Hz) can cache this dict across ticks where len(flight_buffer) hasn't
+    grown, instead of re-running an unchanged fit - see check_feasibility's
+    `cache` parameter and catch.py's per-tick use of it."""
+    fit = fit_trajectory(flight_buffer)
+    last_t = flight_buffer[-1].t
+    crossing_t = fit.time_of_plane_crossing(catch_axis_idx, catch_value, after_t=last_t)
+    if crossing_t is None:
+        return {"n": len(flight_buffer), "crossing_t": None,
+                "note": f"trajectory never crosses catch plane {AXIS_NAMES[catch_axis_idx]}={catch_value}"}
+
+    catch_point_mocap = np.array(fit.position(crossing_t))
+    catch_point_base = mocap_point_to_base(catch_point_mocap, R, t_vec)
+    # Ball velocity at impact (central difference on the fit - avoids assuming the
+    # AxisFit coefficient layout), rotated to base frame. Consumed by catch.py's
+    # --tilt-follow to aim the tool mouth into the incoming trajectory.
+    eps = 0.01
+    vel_mocap = (np.array(fit.position(crossing_t + eps)) - np.array(fit.position(crossing_t - eps))) / (2 * eps)
+    impact_vel_base = R @ vel_mocap
+    reach = float(np.linalg.norm(catch_point_base))
+    reachable = min_reach <= reach <= max_reach
+    return {
+        "n": len(flight_buffer), "last_t": last_t, "crossing_t": crossing_t,
+        "catch_point_base": catch_point_base, "impact_vel_base": impact_vel_base,
+        "reach": reach, "reachable": reachable, "note": None,
+    }
+
+
 def check_feasibility(
     flight_buffer: List[Sample],
     catch_axis_idx: int,
@@ -251,29 +291,40 @@ def check_feasibility(
     max_reach: float,
     required_margin: float,
     box_radius: float,
+    cache: Optional[dict] = None,
 ) -> FeasibilityResult:
-    fit = fit_trajectory(flight_buffer)
-    last_t = flight_buffer[-1].t
-    crossing_t = fit.time_of_plane_crossing(catch_axis_idx, catch_value, after_t=last_t)
+    """`cache`, if given, is a caller-owned dict this function reads and updates.
+    When cache["n"] already equals len(flight_buffer) - i.e. no new mocap sample
+    has arrived since the last call - the fit/plane-crossing solve (_solve_intercept,
+    the expensive ~0.3ms part) is skipped and last tick's solved intercept is
+    reused; current_tcp_xyz-dependent quantities (move_dist/move_time/margin/...)
+    are still recomputed every call regardless, since those depend on the arm's
+    live position, which keeps changing tick over tick even between new ball
+    samples. Pass a fresh {} per throw (not shared across throws) and None for
+    call sites (e.g. this module's own --live console tool) that don't need the
+    optimization."""
+    if cache is not None and cache.get("n") == len(flight_buffer):
+        solved = cache
+    else:
+        solved = _solve_intercept(flight_buffer, catch_axis_idx, catch_value, R, t_vec, min_reach, max_reach)
+        if cache is not None:
+            cache.clear()
+            cache.update(solved)
 
-    if crossing_t is None:
+    if solved["crossing_t"] is None:
         return FeasibilityResult(
             n_samples=len(flight_buffer), crossing_t=None, time_to_impact=None,
             catch_point_base=None, reach=None, reachable=None, move_dist=None,
             move_time=None, margin=None, feasible=False, current_tcp=current_tcp_xyz,
-            note=f"trajectory never crosses catch plane {AXIS_NAMES[catch_axis_idx]}={catch_value}",
+            note=solved["note"],
         )
 
-    catch_point_mocap = np.array(fit.position(crossing_t))
-    catch_point_base = mocap_point_to_base(catch_point_mocap, R, t_vec)
-    # Ball velocity at impact (central difference on the fit - avoids assuming the
-    # AxisFit coefficient layout), rotated to base frame. Consumed by catch.py's
-    # --tilt-follow to aim the tool mouth into the incoming trajectory.
-    eps = 0.01
-    vel_mocap = (np.array(fit.position(crossing_t + eps)) - np.array(fit.position(crossing_t - eps))) / (2 * eps)
-    impact_vel_base = R @ vel_mocap
-    reach = float(np.linalg.norm(catch_point_base))
-    reachable = min_reach <= reach <= max_reach
+    crossing_t = solved["crossing_t"]
+    last_t = solved["last_t"]
+    catch_point_base = solved["catch_point_base"]
+    impact_vel_base = solved["impact_vel_base"]
+    reach = solved["reach"]
+    reachable = solved["reachable"]
 
     move_dist = float(np.linalg.norm(catch_point_base - current_tcp_xyz))
     move_time = model.estimate(move_dist)

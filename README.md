@@ -1,6 +1,6 @@
-# MABALLS
+# Marker-Assisted Ballistic Acquisition Low-Latency Servoing
 
-![catch.py throw plot](docs/media/maballs1.png)
+![catch.py throw plot](docs/media/maballs2.png)
 
 
 
@@ -25,7 +25,7 @@
 
 `catch.py` renders each throw's actual ball path, the arm's TCP path, and every commit/re-aim point, time-colored, in real time. After throw has been detected to end a sound que reveals if the system is confident it managed to catch the projectile.
 
-![catch.py throw plot](docs/media/maballs2.png)
+![catch.py throw plot](docs/media/maballs1.png)
 
 ## Status
 

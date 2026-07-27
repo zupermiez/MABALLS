@@ -148,12 +148,20 @@ SERVO_HOLD_STUCK_S = DEFAULT_SOCK_TIMEOUT
 # throw ~70-90cm outside the reachable zone the whole flight (margin -0.3s to -0.9s,
 # never improving) was chased this way into a hard robot-side fault (C306A3, invalid
 # accel target) and a full power/brake cutoff (C305A15/16/17) - see docs/debug_log.md.
-# Once ABORT_NON_IMPROVING_TICKS consecutive post-commit ticks fail to improve on the
-# margin, the throw is abandoned: the setpoint simply stops being updated (holds where
-# it is) for the rest of that throw. This is a strictly more conservative behavior than
-# today's (which chases until the ball lands or a fault intervenes), so it defaults on.
-ABORT_NON_IMPROVING_TICKS = 8   # ~0.16s at the default --poll-hz 50 - short, but long
-                                # enough that normal per-tick fit noise doesn't false-trigger
+# Once the post-commit margin has gone this long without improving, the throw is
+# abandoned: the setpoint simply stops being updated (holds where it is) for the rest
+# of that throw. This is a strictly more conservative behavior than today's (which
+# chases until the ball lands or a fault intervenes), so it defaults on.
+# Wall-clock seconds, NOT a tick count (that's how this was originally written - 8
+# ticks, "~0.16s at the default --poll-hz 50" - but --poll-hz's real default in servo
+# mode is --servo-rate, 125, so 8 ticks was already only ~64ms; and a raw tick count
+# silently redefines itself every time the loop rate changes, which is exactly the
+# footgun --servo-rate/--poll-hz decoupling (2026-07-27, see docs/debug_log.md) was
+# introduced to remove). Tracked via a monotonic start-of-streak timestamp instead of
+# a counter - see non_improving_since below - so the tolerance means the same thing
+# at 125Hz, 250Hz, or 500Hz.
+ABORT_NON_IMPROVING_S = 0.16    # short, but long enough that normal per-tick fit noise
+                                # doesn't false-trigger
 ABORT_MARGIN_EPS = 0.005        # s - a margin improvement smaller than this still counts
                                 # as "not improving" (ignores sub-tick noise in the fit)
 
@@ -1003,6 +1011,13 @@ def main():
                              "deceleration-aware approach: commanded speed never exceeds "
                              "sqrt(2*a*distance_remaining), so the setpoint cannot overshoot the "
                              "intercept.")
+    parser.add_argument("--servo-return-mult", type=float, default=2.0,
+                        help="multiplier on --servo-max-speed/--servo-max-accel/--servo-base-rate-deg-s "
+                             "applied ONLY while the stream is driving back to the wait pose (idle before "
+                             "a throw, and after a throw ends) - not while tracking/chasing a live ball, "
+                             "which stays at the normal capped speed. Default 2.0 (2026-07-27): the return "
+                             "leg has no accuracy requirement (arriving early is free), so there's no reason "
+                             "it should be bound by the same conservative cap chosen for catch tracking.")
     parser.add_argument("--servo-base-rate-deg-s", type=float, default=SERVO_BASE_RATE_DEG_S,
                         help=f"deg/s cap on the base joint implied by lateral setpoint motion (default "
                              f"{SERVO_BASE_RATE_DEG_S}). This is the servo-mode replacement for movej's "
@@ -1028,7 +1043,13 @@ def main():
                              "in 0.15s' convention as --servo-base-rate-deg-s's implicit accel)")
     parser.add_argument("--servo-rate", type=float, default=125.0,
                         help="Hz setpoint send rate in servo mode (default 125, the rate validated by "
-                             "ur_servo.py --bench at 0 late ticks). Also becomes the default --poll-hz.")
+                             "ur_servo.py --bench at 0 late ticks). Also becomes the default --poll-hz - "
+                             "the two are one loop in servo mode, not independent (emit_setpoint() must "
+                             "run every iteration). check_feasibility()'s fit/solve step is cached against "
+                             "flight_buffer growth (Motive tops out at 120Hz) and the chase-abort timer is "
+                             "wall-clock, not tick-counted, so raising this above 125 no longer wastes cycles "
+                             "re-fitting stale data or silently shrinks the abort tolerance - untested above "
+                             "125 on the real arm as of 2026-07-27, though; validate with --bench first.")
     parser.add_argument("--servo-gain", type=float, default=SERVO_DEFAULT_GAIN,
                         help=f"servoj gain, range [100,2000] (default {SERVO_DEFAULT_GAIN:.0f}). Higher "
                              f"tracks harder but risks vibration - lower this first if the arm buzzes.")
@@ -1068,12 +1089,19 @@ def main():
                              "visibly track the throw - yaw-follow alone keeps wrist joints deliberately "
                              "still, which is why no wrist motion was visible on 2026-07-17. Composes on "
                              "top of yaw-follow. Watch IK reachability near the envelope edge.")
-    parser.add_argument("--approach-speed", type=float, default=1.5,
+    parser.add_argument("--approach-speed", type=float, default=3.0,
                         help="rad/s (joint-space - this move is a movej, not a movel, see move_to()) "
-                             "for the move to/return-to wait pose (default 1.5, the 2026-07-17 operating "
-                             "point - well under the 120 deg/s ~ 2.09 rad/s documented joint max)")
-    parser.add_argument("--approach-accel", type=float, default=1.0,
-                        help="rad/s^2 (joint-space) for the approach/return moves")
+                             "for the move to/return-to wait pose (default 3.0, doubled 2026-07-27 from "
+                             "the 2026-07-17 1.5 rad/s point to make the return-to-wait leg faster. Safe "
+                             "to raise past the 120deg/s ~ 2.09rad/s base/shoulder max unlike a movel's "
+                             "--speed: movej is joint-space, so the controller clamps whichever joint is "
+                             "leading to its own physical/safety limit rather than faulting - a move only "
+                             "actually reaches 3.0 rad/s when a faster joint (elbow/wrist, 180deg/s ~ "
+                             "3.14rad/s max) is leading.)")
+    parser.add_argument("--approach-accel", type=float, default=2.0,
+                        help="rad/s^2 (joint-space) for the approach/return moves (default 2.0, doubled "
+                             "2026-07-27 alongside --approach-speed so the higher cap is actually reachable "
+                             "rather than accel-limited the whole move)")
 
     # Release guard ----------------------------------------------------------------
     parser.add_argument("--min-release-dist", type=float, default=1.0,
@@ -1442,6 +1470,20 @@ def main():
     # Declared HERE, above start_servo_stream(), not down with the loop's other
     # counters: that helper assigns both, and it runs before the loop-state block.
 
+    def set_servo_return_mode(returning: bool):
+        """Switch the live RateLimiter between the normal catch-tracking cap and the
+        faster --servo-return-mult cap used only for the wait-pose return leg (idle
+        before a throw, and after one ends). No-op before the limiter exists (dry-run
+        construction applies its own initial call right after building it)."""
+        if limiter is None:
+            return
+        mult = args.servo_return_mult if returning else 1.0
+        limiter.max_speed = args.servo_max_speed * mult
+        limiter.max_accel = args.servo_max_accel * mult
+        if limiter.max_base_rate is not None:
+            limiter.max_base_rate = math.radians(args.servo_base_rate_deg_s) * mult
+            limiter.max_base_accel = limiter.max_base_rate / 0.15
+
     def start_servo_stream():
         """(Re)open the stream and seed both limiters from where the arm actually is.
 
@@ -1468,6 +1510,7 @@ def main():
         servo_orient = list(wait_pose[3:6])
         last_tick_mono = None
         last_servo_logged = None
+        set_servo_return_mode(True)  # (re)opening the stream always targets the wait pose first
         rec.log("servo_stream", state="up", seeded_at=here[:3])
 
     def stop_servo_stream(reason: str):
@@ -1607,6 +1650,7 @@ def main():
                               reach_bounds=reach_band_at_z, z_bounds=(CATCH_Z_MIN, CATCH_Z_MAX))
         orient_limiter = OrientationRateLimiter(dry_run_pose[3:6], math.radians(args.servo_orient_max_rate_deg_s),
                                                 math.radians(args.servo_orient_max_accel_deg_s2))
+        set_servo_return_mode(True)  # starts targeting the wait pose, same as the live path
         print("[dry-run] servo setpoint path active (limiter + envelope), nothing sent.\n")
 
     # --- state ---
@@ -1628,7 +1672,8 @@ def main():
     committed_target = None     # base-frame xyz the last commit/re-aim was sent to
     reaim_count = 0             # correction moves sent for the current throw
     prev_margin = None          # result.margin on the last post-commit tick (abort trend, see below)
-    non_improving_streak = 0    # consecutive post-commit ticks with a flat-or-worse negative margin
+    non_improving_since = None  # monotonic time the current flat-or-worse-margin streak started, or None
+    feasibility_cache: dict = {}  # per-throw cache for check_feasibility's fit/solve step - see its docstring
     abandoned = False           # True once the current throw's chase has been given up on
     catches = 0                 # session tally: attempted throws whose ball was last seen at the tool
     attempts_ended = 0          # attempted throws that reached throw_end (denominator for the tally)
@@ -1747,7 +1792,8 @@ def main():
                         committed_target = None
                         reaim_count = 0
                         prev_margin = None
-                        non_improving_streak = 0
+                        non_improving_since = None
+                        feasibility_cache = {}
                         abandoned = False
                         pred_window.clear()
                         throw_tcp_trace = []
@@ -1820,7 +1866,8 @@ def main():
                     committed_target = None
                     reaim_count = 0
                     prev_margin = None
-                    non_improving_streak = 0
+                    non_improving_since = None
+                    feasibility_cache = {}
                     abandoned = False
                     pred_window.clear()
                     throw_tcp_trace = []
@@ -1857,6 +1904,7 @@ def main():
                     result = check_feasibility(
                         flight_buffer, catch_axis_idx, catch_value, R, t_vec, current_tcp_xyz,
                         model, CATCH_MIN_REACH, CATCH_MAX_REACH, args.margin, args.box_radius,
+                        cache=feasibility_cache,
                     )
                     if result.crossing_t is not None:
                         pred_window.append(result.catch_point_base)
@@ -1899,22 +1947,26 @@ def main():
                                 post_commit=attempted,
                                 commit_ready=len(flight_buffer) >= commit_samples_eff)
 
-                        # Chase-abort trend check - see ABORT_NON_IMPROVING_TICKS above. Only
+                        # Chase-abort trend check - see ABORT_NON_IMPROVING_S above. Only
                         # meaningful once a catch has actually been committed; a negative margin
-                        # before that is just the normal wait for the gate to open.
+                        # before that is just the normal wait for the gate to open. Tracked as a
+                        # wall-clock streak duration (not a tick count) so the tolerance means the
+                        # same ~0.16s regardless of --poll-hz/--servo-rate.
                         if attempted and not abandoned and result.margin is not None:
                             if result.margin < 0 and (prev_margin is None
                                                        or result.margin <= prev_margin + ABORT_MARGIN_EPS):
-                                non_improving_streak += 1
+                                if non_improving_since is None:
+                                    non_improving_since = now_mono
                             else:
-                                non_improving_streak = 0
+                                non_improving_since = None
                             prev_margin = result.margin
-                            if non_improving_streak >= ABORT_NON_IMPROVING_TICKS:
+                            if non_improving_since is not None and now_mono - non_improving_since >= ABORT_NON_IMPROVING_S:
                                 abandoned = True
-                                print(f"    >> ABORT: margin not improving for {non_improving_streak} ticks "
+                                streak_s = now_mono - non_improving_since
+                                print(f"    >> ABORT: margin not improving for {streak_s:.2f}s "
                                       f"(last margin={result.margin:+.3f}s) - holding, no longer chasing this throw")
                                 rec.log("abort", t=flight_buffer[-1].t, n=result.n_samples,
-                                        margin=result.margin, streak=non_improving_streak)
+                                        margin=result.margin, streak_s=round(streak_s, 3))
 
                         if not attempted and (gate or servo_mode) and len(flight_buffer) >= commit_samples_eff:
                             orient = target_orientation(commit_point, result.impact_vel_base)
@@ -1948,6 +2000,7 @@ def main():
                                     # start - just a new destination for the stream
                                     # that is already running. This is the whole point
                                     # of servo mode: commit latency is one tick.
+                                    set_servo_return_mode(False)  # back to normal chase speed - no longer returning
                                     servo_target = np.array(commit_point, dtype=float)
                                     servo_orient = orient
                                 elif not args.dry_run:
@@ -2129,6 +2182,7 @@ def main():
                         # still drifting home. Feasibility always reads the arm's ACTUAL
                         # TCP, so a throw arriving mid-return is handled correctly rather
                         # than against a stale "we are at the wait pose" assumption.
+                        set_servo_return_mode(True)  # no longer chasing - the return leg gets the faster cap
                         servo_target = wait_xyz.copy()
                         servo_orient = list(wait_pose[3:6])
                         if attempted:

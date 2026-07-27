@@ -1628,3 +1628,114 @@ the live plot (`--plot` → `--no-plot`, inverted) both on by default.
 `--servo-max-accel` and `--rigid-body-id` were already at 4.0/3, unchanged.
 `--reaim-preempt` was deliberately left opt-in (see the "What's left" note in
 CLAUDE.md).
+
+## 2026-07-27 (later still) — `--servo-rate`/`--poll-hz` decoupled from the chase-abort timer, feasibility fit cached
+
+User asked whether raising `ur_servo.py`'s setpoint send rate above 125Hz (to
+give the robot's own 500Hz `servoj` thread a fresher target, reducing the
+measured 3.1mm bench-sine lag) could make things *worse* by adding overhead
+elsewhere. Two offline benchmarks (no robot needed) before touching anything:
+`check_feasibility()` costs ~0.3ms/call regardless of sample count (10-150
+samples tested), `Recorder.log()`'s write+flush costs ~0.01ms - both trivial
+against even a 2ms (500Hz) tick budget, so raw CPU overhead was never the
+real risk.
+
+The real risk: `--poll-hz` and `--servo-rate` are the same loop in servo mode
+(`emit_setpoint()` must run every iteration - see its docstring), so raising
+the send rate also raises how often `check_feasibility()` re-fits and logs.
+Two problems with that: (1) Motive only delivers new samples at 120Hz, so
+above that, most iterations were re-fitting an *unchanged* `flight_buffer` -
+pure waste, not a speed benefit; (2) `ABORT_NON_IMPROVING_TICKS` (the
+chase-abort safety timer from the entry two above, added after a real
+`C306A3`/hard-fault chase) was a raw tick count ("8, ~0.16s at the default
+50Hz poll rate" - already stale, since servo mode's real default poll rate
+is 125, making it ~64ms, not 160ms). A tick count silently redefines its own
+real-world duration every time the loop rate changes; at 500Hz the same 8
+ticks is 16ms, meaning the abort could fire on far less genuine
+non-improvement than it was calibrated for.
+
+Fixed both before touching the rate itself:
+- `catch_feasibility.py`: split `check_feasibility()`'s fit/plane-crossing
+  solve into `_solve_intercept()`, cached in a caller-owned `dict` keyed on
+  `len(flight_buffer)`. A cache hit skips the ~0.3ms fit (measured cached
+  call: ~0.008ms, ~38x) but still recomputes `move_dist`/`move_time`/`margin`
+  fresh from the current TCP every call - those depend on the arm's live
+  position, which keeps changing tick over tick even between new ball
+  samples, so they must never be cached. `cache=None` (the default, used by
+  this module's own `--live` console tool) reproduces the old always-refit
+  behavior exactly - verified byte-for-byte identical `catch_point_base`/
+  `margin` between `cache=None` and a fresh cache's first call.
+- `catch.py`: added a per-throw `feasibility_cache = {}`, reset at both
+  existing throw-reset points (normal throw-start and the post-fault
+  recapture path), passed into `check_feasibility(..., cache=feasibility_cache)`.
+- `ABORT_NON_IMPROVING_TICKS` (int, ticks) → `ABORT_NON_IMPROVING_S = 0.16`
+  (float, seconds); `non_improving_streak` (counter) →
+  `non_improving_since` (monotonic timestamp of streak start, reusing the
+  loop's already-computed `now_mono`). Abort fires when
+  `now_mono - non_improving_since >= ABORT_NON_IMPROVING_S`, same ~0.16s
+  tolerance as originally intended, now invariant to `--poll-hz`/
+  `--servo-rate`. `rec.log("abort", ...)` now logs `streak_s` instead of a
+  tick count.
+
+Net effect: raising `--servo-rate` no longer wastes cycles re-fitting stale
+data, and no longer silently shrinks the abort tolerance - the mechanism that
+made "just raise the rate" risky is gone. Default left at 125 (unchanged) -
+promoting it to 250/500 needs its own real-arm validation session (start
+with `ur_servo.py --bench --rate 250/500`, isolated from catch.py's heavier
+loop, before trying it inside catch.py itself), consistent with this
+project's practice of validating before promoting a default. Not yet run on
+the real arm.
+
+## 2026-07-27 (yet later) — return-to-wait doubled to 2x, made default
+
+User request: make the return-to-wait leg 2x faster and make that the
+default. The governing insight (already load-bearing for the whole catch
+design): arriving early is free, so the return leg has zero accuracy
+requirement and has no reason to be capped at the same conservative speed
+chosen for catch tracking.
+
+Two separate code paths drive "back to the wait pose," so both needed a
+change:
+
+- **Servo mode (the default `--catch-move`).** The `ur_servo.RateLimiter`
+  instance is shared for the whole session - one `max_speed`/`max_accel`/
+  `max_base_rate`, used identically whether the stream is chasing a live
+  commit or drifting home afterward. Added `set_servo_return_mode(bool)` in
+  `catch.py`, which mutates the live limiter's three caps (all plain float
+  attributes, safe to change mid-stream) between normal (`--servo-max-speed`/
+  `-accel`/`--servo-base-rate-deg-s`) and boosted (`x --servo-return-mult`,
+  default 2.0). Called `True` (boosted) at both `start_servo_stream()` call
+  sites (initial bring-up and post-fault reconnect - both start out driving
+  to the wait pose) and at the post-throw return-to-wait; called `False`
+  (normal) the instant a throw commits (`servo_target = commit_point`).
+  Reaim/retarget while already chasing don't need their own call - they only
+  fire after a commit, which already reset to normal.
+  - Scaling `max_base_rate` too (not just linear `max_speed`/`max_accel`)
+    matters because the limiter's state is cylindrical (r, theta, z) - a
+    return to a wait pose at a different azimuth than the last commit is
+    often base-joint(theta)-limited, not linear-speed-limited, and doubling
+    only `max_speed` would have done nothing for that case.
+- **Non-servo (`--catch-move movel`/`movej`) and the paths shared regardless
+  of catch-move mode** (one-time initial approach at session start, and
+  `wait_for_fault_clear()`'s post-fault return) all go through `move_to()`,
+  a blocking `movej`. Doubled `--approach-speed` 1.5→3.0 rad/s and
+  `--approach-accel` 1.0→2.0 rad/s² (accel doubled too so the higher speed
+  cap is actually reachable instead of staying ramp-limited the whole move).
+  Checked this is safe to push past the 120°/s (~2.09 rad/s) base/shoulder
+  joint max, unlike the analogous change would be for a `movel`'s `--speed`:
+  `move_to()` was already deliberately switched from `movel` to `movej` (see
+  the 2026-07-16 entry) specifically because a Cartesian-parametrized move
+  can imply an unpredictable, unbounded joint speed depending on geometry,
+  whereas `movej`'s `v` is a joint-space request the controller clamps to
+  whichever joint's own physical/safety limit is reached first - it cannot
+  fault the way `movel` did. The move only actually achieves the full 3.0
+  rad/s when a faster joint (elbow/wrist, 180°/s ~ 3.14 rad/s max) is
+  leading; a base/shoulder-dominated return is silently capped to what that
+  joint can actually do, same as it always was, just with more headroom than
+  the old 1.5 rad/s point left on the table.
+
+Not yet run on the real arm - both changes are logic/reasoning-reviewed
+only, following this project's usual practice of shipping speed-cap changes
+as a default once judged safe by construction (movej's own per-joint clamp,
+here) rather than requiring a dry-run first for an incremental tuning change
+per the 2026-07-22 dry-run judgment call.

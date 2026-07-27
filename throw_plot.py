@@ -70,17 +70,28 @@ from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 import numpy as np
 
-BALL_COLOR = "#2a78d6"        # ball start/end marker identity (blue) - the path itself is time-colored
-ROBOT_COLOR = "#1baf7a"       # arm TCP end marker identity (aqua) - the path itself is time-colored
-ENVELOPE_COLOR = "#c3c2b7"    # muted chrome - reference geometry, not data
-WAIT_COLOR = "#898781"        # muted ink
-BASE_COLOR = "#0b0b0b"        # primary ink
-GUESS_LINE_COLOR = "#8a3210"  # neutral connector between successive predicted catch-point guesses
-NEUTRAL_INK = "#52514e"       # legend swatches for line *style* (color there varies per-throw for real data)
+# Dark theme (2026-07-27): chart chrome/ink pulled from the dataviz skill's
+# validated dark-mode tokens (references/palette.md), not eyeballed - surfaces,
+# ink, and gridline all come from the same "Chart chrome & ink" dark column.
+PAGE_PLANE = "#0d0d0d"        # figure background - near-black, not pure #000 (validated token)
+CHART_SURFACE = "#1a1a19"     # axes panel background, one step off the page for separation
+INK_PRIMARY = "#ffffff"
+INK_SECONDARY = "#c3c2b7"
+INK_MUTED = "#898781"         # axis/tick labels - same value in both modes by design
+GRIDLINE = "#2c2c2a"
+AXIS_LINE = "#383835"
 
-STATUS_CAUGHT = "#0ca30c"
-STATUS_MISSED = "#d03b3b"
-STATUS_NEUTRAL = "#898781"
+BALL_COLOR = "#3987e5"        # categorical slot 1 (blue), dark step - ball start/end marker identity
+ROBOT_COLOR = "#199e70"       # categorical slot 3 (aqua), dark step - arm TCP end marker identity
+ENVELOPE_COLOR = INK_MUTED    # reference geometry, not data - muted so it recedes behind real data
+WAIT_COLOR = INK_MUTED
+BASE_COLOR = "#9085e9"        # categorical slot 7 (violet), dark step - needs to pop against black, not sink into it
+GUESS_LINE_COLOR = "#d95926"  # categorical slot 2 (orange), dark step - connector between predicted catch-point guesses
+NEUTRAL_INK = INK_SECONDARY   # legend swatches for line *style* (color there varies per-throw for real data)
+
+STATUS_CAUGHT = "#0ca30c"     # dark-mode "good" (5.19:1 on #1a1a19)
+STATUS_MISSED = "#e66767"     # categorical slot 8 (red), dark step - brighter than the light-mode critical red, needed on black
+STATUS_NEUTRAL = INK_MUTED
 
 # Single perceptual ramp shared by the ball path, arm path, and every decision
 # marker: purple (release) -> magenta/red -> orange -> yellow (impact). Fixed
@@ -158,30 +169,50 @@ class ThrowPlotWindow:
 
         plt.ion()
         self.fig = plt.figure(figsize=(12.5, 6.8))
+        self.fig.patch.set_facecolor(PAGE_PLANE)
         self.fig.canvas.mpl_connect("close_event", self._on_close)
         self.fig.canvas.manager.set_window_title("catch.py - throw plot")
-        self.fig.subplots_adjust(top=0.86, bottom=0.06)
-        gs = self.fig.add_gridspec(2, 2, height_ratios=[10, 1], hspace=0.32, wspace=0.28)
+        self.fig.subplots_adjust(top=0.86, bottom=0.03)
+        gs = self.fig.add_gridspec(2, 2, height_ratios=[10, 2], hspace=0.32, wspace=0.28)
         self.ax_top = self.fig.add_subplot(gs[0, 0])
         self.ax_side = self.fig.add_subplot(gs[0, 1])
         ax_legend = self.fig.add_subplot(gs[1, :])
         ax_legend.axis("off")
+        ax_legend.set_facecolor(PAGE_PLANE)
 
-        self.ax_top.set_title("Top-down (base X–Y)")
+        self.ax_top.set_title("Top-down (base X–Y)", color=INK_PRIMARY, family="monospace", fontsize=10)
         self.ax_top.set_xlabel("x (m)")
         self.ax_top.set_ylabel("y (m)")
         self.ax_top.set_aspect("equal", adjustable="datalim")
-        self.ax_side.set_title("Reach profile (radial distance – height)")
+        self.ax_side.set_title("Reach profile (radial distance – height)", color=INK_PRIMARY,
+                               family="monospace", fontsize=10)
         self.ax_side.set_xlabel("distance from base (m)")
         self.ax_side.set_ylabel("z (m, base frame)")
+        # Equal aspect on ax_side too (ax_top already had it) - without this the
+        # envelope rectangle (a real 0.75m-reach x 0.43m-tall box) gets stretched
+        # to whatever ratio best fills the panel for THIS throw's own data range,
+        # so the same fixed real-world box can look tall on one throw and wide on
+        # another. Locking the aspect makes it always render at its true, wider-
+        # than-tall proportions regardless of what data happens to be in frame.
+        self.ax_side.set_aspect("equal", adjustable="datalim")
         for ax in (self.ax_top, self.ax_side):
             ax.margins(0.15)
-            ax.grid(True, linewidth=0.4, alpha=0.35)
+            ax.set_facecolor(CHART_SURFACE)
+            ax.grid(True, linewidth=0.5, alpha=0.6, color=GRIDLINE)
+            ax.xaxis.label.set_color(INK_SECONDARY)
+            ax.yaxis.label.set_color(INK_SECONDARY)
+            ax.tick_params(colors=INK_MUTED, labelsize=8)
+            for spine_name, spine in ax.spines.items():
+                if spine_name in ("top", "right"):
+                    spine.set_visible(False)
+                else:
+                    spine.set_color(AXIS_LINE)
 
         self.title_text = self.fig.suptitle("catch.py — waiting for the first throw...",
-                                            color=STATUS_NEUTRAL, fontsize=13, fontweight="bold", y=0.975)
+                                            color=STATUS_NEUTRAL, fontsize=13, fontweight="bold",
+                                            family="monospace", y=0.975)
         self.stats_text = self.fig.text(0.5, 0.905, "", ha="center", va="top", fontsize=8,
-                                        family="monospace", color="#52514e")
+                                        family="monospace", color=INK_SECONDARY)
 
         # --- static geometry (catch envelope, wait pose, base) - drawn once, ---
         # --- never touched again: these don't change throw to throw. ---
@@ -209,11 +240,26 @@ class ThrowPlotWindow:
         # Ball and arm paths are LineCollections (not Line2D) so each segment can
         # carry its own color off the shared TIME_CMAP/TIME_NORM clock - solid for
         # the ball, dashed for the arm, since color no longer distinguishes them.
+        #
+        # Each gets a "glow" twin: a wider, low-alpha copy of the same segments/
+        # colors drawn just underneath (lower zorder, added first) - a cheap way
+        # to fake a neon/emissive line against the black surface (thick soft halo
+        # + thin crisp core). Glow twins are mutated in lockstep with their crisp
+        # counterpart in update() (same set_segments/set_array calls, same cost
+        # class) - roughly doubles the per-update array-set work for these four
+        # artists specifically, which is negligible next to the draw itself; see
+        # module docstring for the overall per-update latency budget.
+        self.ball_glow_top = LineCollection([], cmap=TIME_CMAP, norm=TIME_NORM,
+                                            linewidths=7.0, alpha=0.35, capstyle="round", zorder=2)
+        self.ax_top.add_collection(self.ball_glow_top)
+        self.ball_glow_side = LineCollection([], cmap=TIME_CMAP, norm=TIME_NORM,
+                                             linewidths=7.0, alpha=0.35, capstyle="round", zorder=2)
+        self.ax_side.add_collection(self.ball_glow_side)
         self.ball_line_top = LineCollection([], cmap=TIME_CMAP, norm=TIME_NORM,
-                                            linewidths=2.4, capstyle="round", zorder=3)
+                                            linewidths=2.2, capstyle="round", zorder=3)
         self.ax_top.add_collection(self.ball_line_top)
         self.ball_line_side = LineCollection([], cmap=TIME_CMAP, norm=TIME_NORM,
-                                             linewidths=2.4, capstyle="round", zorder=3)
+                                             linewidths=2.2, capstyle="round", zorder=3)
         self.ax_side.add_collection(self.ball_line_side)
         (self.ball_top_start,) = self.ax_top.plot([], [], "o", color=BALL_COLOR, markersize=7, zorder=4,
                                                   markerfacecolor="white", markeredgewidth=1.6)
@@ -224,11 +270,17 @@ class ThrowPlotWindow:
         (self.ball_side_end,) = self.ax_side.plot([], [], "x", color=BALL_COLOR, markersize=10,
                                                   markeredgewidth=2.4, zorder=4)
 
+        self.arm_glow_top = LineCollection([], cmap=TIME_CMAP, norm=TIME_NORM,
+                                           linewidths=7.5, alpha=0.30, capstyle="round", zorder=2)
+        self.ax_top.add_collection(self.arm_glow_top)
+        self.arm_glow_side = LineCollection([], cmap=TIME_CMAP, norm=TIME_NORM,
+                                            linewidths=7.5, alpha=0.30, capstyle="round", zorder=2)
+        self.ax_side.add_collection(self.arm_glow_side)
         self.arm_line_top = LineCollection([], cmap=TIME_CMAP, norm=TIME_NORM,
-                                           linewidths=2.6, linestyles="--", capstyle="round", zorder=3)
+                                           linewidths=2.4, linestyles="--", capstyle="round", zorder=3)
         self.ax_top.add_collection(self.arm_line_top)
         self.arm_line_side = LineCollection([], cmap=TIME_CMAP, norm=TIME_NORM,
-                                            linewidths=2.6, linestyles="--", capstyle="round", zorder=3)
+                                            linewidths=2.4, linestyles="--", capstyle="round", zorder=3)
         self.ax_side.add_collection(self.arm_line_side)
         (self.arm_top_end,) = self.ax_top.plot([], [], "o", color=ROBOT_COLOR, markersize=8, zorder=5)
         (self.arm_side_end,) = self.ax_side.plot([], [], "o", color=ROBOT_COLOR, markersize=8, zorder=5)
@@ -254,10 +306,10 @@ class ThrowPlotWindow:
         # bigger + heavier edge for the initial commit than for later re-aims/
         # retargets, colored on the same shared clock as everything else here.
         self.event_scat_top = self.ax_top.scatter([], [], c=[], cmap=TIME_CMAP, norm=TIME_NORM,
-                                                   marker="D", s=[], edgecolors="black",
+                                                   marker="D", s=[], edgecolors=INK_PRIMARY,
                                                    linewidths=1.1, zorder=6)
         self.event_scat_side = self.ax_side.scatter([], [], c=[], cmap=TIME_CMAP, norm=TIME_NORM,
-                                                     marker="D", s=[], edgecolors="black",
+                                                     marker="D", s=[], edgecolors=INK_PRIMARY,
                                                      linewidths=1.1, zorder=6)
 
         sm = plt.cm.ScalarMappable(cmap=TIME_CMAP, norm=TIME_NORM)
@@ -265,22 +317,44 @@ class ThrowPlotWindow:
         cbar = self.fig.colorbar(sm, ax=[self.ax_top, self.ax_side], orientation="horizontal",
                                  fraction=0.05, pad=0.12, aspect=40)
         cbar.set_label("time through this throw's flight (release -> impact) — "
-                       "shared by the ball path, arm path, and move markers", fontsize=8)
-        cbar.ax.tick_params(labelsize=7)
+                       "shared by the ball path, arm path, and move markers",
+                       fontsize=8, color=INK_SECONDARY)
+        cbar.ax.tick_params(labelsize=7, colors=INK_MUTED)
+        cbar.outline.set_edgecolor(AXIS_LINE)
 
+        # Every marker that actually appears on the axes gets its own entry here -
+        # a marker with nothing in the legend is what caused the "what's the blue
+        # cross / blue diamond" confusion (2026-07-28): the X and the plain circle
+        # markers had no legend line at all, and the diamond's swatch was a flat
+        # gray that didn't warn the reader its real color means "time", not
+        # "identity" (a diamond from early in a throw renders in plasma's blue/
+        # violet start - easy to mistake for a fixed "ball-blue" color, since
+        # BALL_COLOR is also blue). Fix: label every marker, and spell out
+        # "color = time" wherever a time-colored swatch could otherwise read as
+        # an identity color.
+        commit_swatch = TIME_CMAP(0.12)
+        reaim_swatch = TIME_CMAP(0.75)
         handles = [
-            Line2D([0], [0], color=NEUTRAL_INK, lw=2.4, ls="-", label="ball path (solid; color = time)"),
+            Line2D([0], [0], color=NEUTRAL_INK, lw=2.4, ls="-", label="ball path (color = time, see bar below)"),
             Line2D([0], [0], color=NEUTRAL_INK, lw=2.6, ls="--", label="arm TCP path (dashed; same time scale)"),
-            Line2D([0], [0], marker="D", color="none", markerfacecolor=NEUTRAL_INK, markeredgecolor="black",
-                  markersize=8, label="commit / re-aim / retarget (marked on ball path)"),
+            Line2D([0], [0], marker="o", color="none", markerfacecolor="white", markeredgecolor=BALL_COLOR,
+                  markeredgewidth=1.6, markersize=8, label="release (ball, first sample)"),
+            Line2D([0], [0], marker="x", color=BALL_COLOR, markeredgewidth=2.2, markersize=9,
+                  label="ball last seen (flight end)"),
+            Line2D([0], [0], marker="o", color="none", markerfacecolor=ROBOT_COLOR, markersize=8,
+                  label="arm TCP, end of throw"),
+            Line2D([0], [0], marker="D", color="none", markerfacecolor=commit_swatch, markeredgecolor=INK_PRIMARY,
+                  markeredgewidth=1.1, markersize=10, label="commit (large ◆, color = time)"),
+            Line2D([0], [0], marker="D", color="none", markerfacecolor=reaim_swatch, markeredgecolor=INK_PRIMARY,
+                  markeredgewidth=1.1, markersize=6, label="re-aim / retarget (small ◆, color = time)"),
             Line2D([0], [0], color=GUESS_LINE_COLOR, lw=1, ls=":", marker="*", markersize=10,
                   label="predicted catch point (converging guesses)"),
             Line2D([0], [0], marker="s", color="none", markerfacecolor=WAIT_COLOR, markersize=8, label="wait pose"),
-            Line2D([0], [0], marker="^", color="none", markerfacecolor=BASE_COLOR, markersize=8, label="base"),
+            Line2D([0], [0], marker="^", color="none", markerfacecolor=BASE_COLOR, markersize=8, label="robot base"),
             Line2D([0], [0], color=ENVELOPE_COLOR, lw=1, ls="--", label="catch envelope"),
         ]
-        ax_legend.legend(handles=handles, loc="center", ncol=4,
-                        frameon=False, fontsize=8, handlelength=1.8, columnspacing=1.3)
+        ax_legend.legend(handles=handles, loc="center", ncol=4, labelcolor=INK_SECONDARY,
+                        frameon=False, fontsize=8, handlelength=1.8, columnspacing=1.3, labelspacing=1.1)
 
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
@@ -346,19 +420,21 @@ class ThrowPlotWindow:
             bx, by, bz = ball_base[:, 0], ball_base[:, 1], ball_base[:, 2]
             b_reach = np.hypot(bx, by)
             seg_colors = fracs[:-1] if len(fracs) > 1 else np.zeros(0)
-            self.ball_line_top.set_segments(_segments(bx, by))
-            self.ball_line_top.set_array(seg_colors)
-            self.ball_line_side.set_segments(_segments(b_reach, bz))
-            self.ball_line_side.set_array(seg_colors)
+            top_segs, side_segs = _segments(bx, by), _segments(b_reach, bz)
+            for line in (self.ball_line_top, self.ball_glow_top):
+                line.set_segments(top_segs)
+                line.set_array(seg_colors)
+            for line in (self.ball_line_side, self.ball_glow_side):
+                line.set_segments(side_segs)
+                line.set_array(seg_colors)
             self.ball_top_start.set_data([bx[0]], [by[0]])
             self.ball_top_end.set_data([bx[-1]], [by[-1]])
             self.ball_side_start.set_data([b_reach[0]], [bz[0]])
             self.ball_side_end.set_data([b_reach[-1]], [bz[-1]])
         else:
-            self.ball_line_top.set_segments(np.empty((0, 2, 2)))
-            self.ball_line_top.set_array(np.zeros(0))
-            self.ball_line_side.set_segments(np.empty((0, 2, 2)))
-            self.ball_line_side.set_array(np.zeros(0))
+            for line in (self.ball_line_top, self.ball_glow_top, self.ball_line_side, self.ball_glow_side):
+                line.set_segments(np.empty((0, 2, 2)))
+                line.set_array(np.zeros(0))
             for artist in (self.ball_top_start, self.ball_top_end,
                           self.ball_side_start, self.ball_side_end):
                 artist.set_data([], [])
@@ -369,17 +445,19 @@ class ThrowPlotWindow:
             tx, ty, tz = tcp_xyz[:, 0], tcp_xyz[:, 1], tcp_xyz[:, 2]
             t_reach = np.hypot(tx, ty)
             arm_seg_colors = tcp_fracs[:-1] if len(tcp_fracs) > 1 else np.zeros(0)
-            self.arm_line_top.set_segments(_segments(tx, ty))
-            self.arm_line_top.set_array(arm_seg_colors)
-            self.arm_line_side.set_segments(_segments(t_reach, tz))
-            self.arm_line_side.set_array(arm_seg_colors)
+            arm_top_segs, arm_side_segs = _segments(tx, ty), _segments(t_reach, tz)
+            for line in (self.arm_line_top, self.arm_glow_top):
+                line.set_segments(arm_top_segs)
+                line.set_array(arm_seg_colors)
+            for line in (self.arm_line_side, self.arm_glow_side):
+                line.set_segments(arm_side_segs)
+                line.set_array(arm_seg_colors)
             self.arm_top_end.set_data([tx[-1]], [ty[-1]])
             self.arm_side_end.set_data([t_reach[-1]], [tz[-1]])
         else:
-            self.arm_line_top.set_segments(np.empty((0, 2, 2)))
-            self.arm_line_top.set_array(np.zeros(0))
-            self.arm_line_side.set_segments(np.empty((0, 2, 2)))
-            self.arm_line_side.set_array(np.zeros(0))
+            for line in (self.arm_line_top, self.arm_glow_top, self.arm_line_side, self.arm_glow_side):
+                line.set_segments(np.empty((0, 2, 2)))
+                line.set_array(np.zeros(0))
             self.arm_top_end.set_data([], [])
             self.arm_side_end.set_data([], [])
 

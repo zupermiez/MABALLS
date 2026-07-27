@@ -644,11 +644,26 @@ stop it, since the retarget's *position* stayed nominally in-bounds even as its
 *margin* (time budget) only got worse. Fix: `catch.py` now tracks the feasibility
 margin trend after commit and abandons the chase (holds the last setpoint, stops
 retargeting/re-aiming) once margin has stayed negative and non-improving for
-`ABORT_NON_IMPROVING_TICKS` (8) consecutive ticks - strictly more conservative than
-before, so on by default with no opt-out flag. Separately, a bug where a failed
-post-fault servo-stream reconnect raised an uncaught `SystemExit` and skipped
+`ABORT_NON_IMPROVING_S` (0.16s, wall-clock - changed from a raw tick count the same
+day it was found to silently redefine its own duration whenever `--poll-hz`/
+`--servo-rate` changed, see below) - strictly more conservative than before, so on
+by default with no opt-out flag. Separately, a bug where a failed post-fault
+servo-stream reconnect raised an uncaught `SystemExit` and skipped
 `wrap_up_session()` (silently losing the SSH log pull for the fault that mattered
 most) was also fixed that day - see `docs/debug_log.md`.
+
+**`--servo-rate`/`--poll-hz` decoupled from per-tick cost (2026-07-27).** These are
+one loop in servo mode (`emit_setpoint()` runs every iteration), so raising the send
+rate used to also force `check_feasibility()` to re-fit and log more often - wasted
+above ~120Hz since Motive doesn't deliver new samples that fast, and it silently
+shrank `ABORT_NON_IMPROVING_S`'s real tolerance (see above). Fixed:
+`check_feasibility()` now takes a `cache` dict (`catch_feasibility.py`) that skips
+re-fitting when `flight_buffer` hasn't grown (~38x faster on a cache hit) while still
+recomputing the current-TCP-dependent parts (`move_dist`/`move_time`/`margin`) every
+call. Default `--servo-rate` stays 125 (unvalidated above that on the real arm) -
+raising it is now safe to try (`ur_servo.py --bench --rate 250/500` first, isolated
+from catch.py's loop) but needs its own real-session validation before becoming the
+default, per usual practice here. Full reasoning: `docs/debug_log.md` 2026-07-27.
 
 Current default operating point: `--catch-move servo --tilt-follow 20`
 (`--servo-max-speed 0.8 --servo-max-accel 4.0`, yaw-follow always on), recording and
@@ -661,6 +676,21 @@ T_base_from_baseRB_v2.json` (live per-tick transform) on by default over the sta
 
 A real 2026-07-27 collision (tool vs. the base's mounting stand) tightened the catch
 envelope's z floor (`CATCH_Z_MIN` -0.25→0.119) — see Key safety rules.
+
+**Return-to-wait is 2x faster by default (2026-07-27).** The return leg has no
+accuracy requirement (arriving early is free), so it shouldn't be bound by the same
+conservative cap chosen for catch tracking. `--servo-return-mult` (default 2.0)
+scales `--servo-max-speed`/`--servo-max-accel`/`--servo-base-rate-deg-s` only while
+the stream is driving to the wait pose (idle, and after a throw ends) — `catch.py`'s
+`set_servo_return_mode()` flips the live `RateLimiter`'s caps back to normal the
+instant a throw commits. Separately, `--approach-speed`/`--approach-accel` (the
+movej used for the one-time initial approach, fault recovery, and non-servo
+`--catch-move movel`/`movej`'s return-to-wait) doubled 1.5→3.0 rad/s /
+1.0→2.0 rad/s². Safe past the 120°/s base-joint max unlike a `movel`'s `--speed`:
+movej is joint-space, so the controller clamps whichever joint leads to its own
+physical limit rather than faulting — it only actually hits 3.0 rad/s when a faster
+joint (elbow/wrist, 180°/s max) leads. Neither change touched while chasing a live
+ball. **Not yet run on the real arm** — logic-reviewed only.
 
 Full session-by-session history is in `docs/debug_log.md`, dated 2026-07-16 through
 2026-07-27 — consult it for the "why" behind any of the current defaults above.
