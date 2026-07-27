@@ -6,9 +6,10 @@ transform as ground truth for the marker's base-frame position:
   where assumed) - |R_flange d| = |d| is pose-invariant.
 - small scattered |diff| -> mocap-side error instead."""
 import json
+import pathlib
 import numpy as np
 
-base="/home/erkka/codeprojects/OPTITRACK/"
+base = str(pathlib.Path(__file__).resolve().parent.parent) + "/"
 d0=json.load(open(base+"T_base_from_mocap.json"))
 R0,t0=np.array(d0["R"]),np.array(d0["t"])
 for name in ["T_base_from_mocap_marker.json","T_base_from_mocap_marker2.json"]:

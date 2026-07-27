@@ -6,10 +6,13 @@
 5. cross-consistency: marker1 vs marker2 vs old transform in the catch zone
 6. residual-vs-position correlation."""
 import json
+import pathlib
 import numpy as np
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
 def load(p):
-    d = json.load(open("/home/erkka/codeprojects/OPTITRACK/" + p))
+    d = json.load(open(REPO_ROOT / p))
     P = np.array([s["p_mocap"] for s in d["samples"]])
     Q = np.array([s["p_robot"] for s in d["samples"]])
     return d, P, Q

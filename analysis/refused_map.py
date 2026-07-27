@@ -3,9 +3,10 @@ the catch plane, in base frame, relative to the wait pose? And what was their
 flight time / time-to-impact at first tick? -> tells us whether a different
 wait pose / plane would convert refusals into attempts."""
 import json, glob
+import pathlib
 import numpy as np
 
-base="/home/erkka/codeprojects/OPTITRACK/"
+base = str(pathlib.Path(__file__).resolve().parent.parent) + "/"
 T=json.load(open(base+"T_base_from_mocap.json"))
 R0,t0=np.array(T["R"]),np.array(T["t"])
 def to_base(p): return R0@np.asarray(p)+t0

@@ -3,9 +3,12 @@ on missed throws (how much a later correction would have bought), (3) caught-
 ball last-distance proxy for movej vs movel accuracy, (4) guard/shortfall
 margins on non-committed throws."""
 import json, glob, math
+import pathlib
 import numpy as np
 
-T = json.load(open("/home/erkka/codeprojects/OPTITRACK/T_base_from_mocap.json"))
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+T = json.load(open(REPO_ROOT / "T_base_from_mocap.json"))
 R = np.array(T["R"]); tv = np.array(T["t"])
 def to_base(p): return R @ np.asarray(p) + tv
 
@@ -18,7 +21,7 @@ def plane_crossing(raw, plane_y):
     return None
 
 MARGIN = 0.03
-sessions = sorted(glob.glob("/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260717_*.jsonl"))
+sessions = sorted(glob.glob(str(REPO_ROOT / "catch_logs/catch_log_20260717_*.jsonl")))
 
 reaim_block = dict(no_postcommit_ticks=0, not_settled=0, drift_small=0, no_time=0,
                    envelope=0, fired=0, no_crossing_post=0)

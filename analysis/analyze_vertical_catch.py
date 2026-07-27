@@ -18,10 +18,12 @@ information/start point - isolating the effect of catch height by itself.
 import glob
 import json
 import sys
+import pathlib
 
 import numpy as np
 
-sys.path.insert(0, "/home/erkka/codeprojects/OPTITRACK")
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 from trajectory import Sample, fit_trajectory, AXIS_NAMES
 from frames import mocap_point_to_base
 from catch_feasibility import MoveTimeModel
@@ -31,7 +33,7 @@ CATCH_Z_MIN, CATCH_Z_MAX = -0.25, 0.55
 CATCH_MAX_AZIMUTH_DEG = 75.0
 MIN_SAMPLES_FOR_CHECK = 40
 
-with open("/home/erkka/codeprojects/OPTITRACK/T_base_from_mocap.json") as f:
+with open(REPO_ROOT / "T_base_from_mocap.json") as f:
     _t = json.load(f)
 R = np.array(_t["R"])
 t_vec = np.array(_t["t"])
@@ -121,7 +123,7 @@ def analyze_file(path):
 
 
 all_rows = []
-for path in sorted(glob.glob("/home/erkka/codeprojects/OPTITRACK/catch_logs/*.jsonl")):
+for path in sorted(glob.glob(str(REPO_ROOT / "catch_logs/*.jsonl"))):
     all_rows.extend(analyze_file(path))
 
 print(f"analyzed {len(all_rows)} throws with >=45 raw samples across all sessions\n")
@@ -188,6 +190,6 @@ if nc:
             print(f"  of {len(missed_rows)} MISSED real catches, height-search would have newly "
                   f"unlocked feasibility for {len(flip3)}")
 
-with open("/home/erkka/codeprojects/OPTITRACK/analysis/vertical_catch_rows.json", "w") as f:
+with open(REPO_ROOT / "analysis/vertical_catch_rows.json", "w") as f:
     json.dump(all_rows, f, indent=1)
 print("\nsaved analysis/vertical_catch_rows.json")

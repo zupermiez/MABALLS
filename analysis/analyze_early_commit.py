@@ -18,29 +18,32 @@ plot_catch_area_2.py to render.
 import glob
 import json
 import math
+import pathlib
 import sys
 from collections import defaultdict
 
 import numpy as np
 
-sys.path.insert(0, "/home/erkka/codeprojects/OPTITRACK")
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+CATCH_LOGS = REPO_ROOT / "catch_logs"
 
-PRE_FILES = sorted(glob.glob("/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260721_*.jsonl")) + [
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_105755.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_105903.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_111640.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_113113.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_114222.jsonl",
+PRE_FILES = sorted(glob.glob(str(CATCH_LOGS / "catch_log_20260721_*.jsonl"))) + [
+    str(CATCH_LOGS / "catch_log_20260722_105755.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_105903.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_111640.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_113113.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_114222.jsonl"),
 ]
 POST_FILES = [
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_140544.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_164459.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_172652.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_173706.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_173719.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260722_173904.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260723_103647.jsonl",
-    "/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260723_105022.jsonl",
+    str(CATCH_LOGS / "catch_log_20260722_140544.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_164459.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_172652.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_173706.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_173719.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260722_173904.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260723_103647.jsonl"),
+    str(CATCH_LOGS / "catch_log_20260723_105022.jsonl"),
 ]
 
 
@@ -142,7 +145,7 @@ if __name__ == "__main__":
     pre_rows, pre_faults = analyze_group("PRE (feasibility-gated servo, 07-21 & 07-22 morning)", PRE_FILES)
     post_rows, post_faults = analyze_group("POST (early-commit servo, 07-22 afternoon & 07-23)", POST_FILES)
 
-    with open("/home/erkka/codeprojects/OPTITRACK/analysis/early_commit_rows.json", "w") as f:
+    with open(REPO_ROOT / "analysis/early_commit_rows.json", "w") as f:
         json.dump({"pre": pre_rows, "post": post_rows,
                     "pre_faults": pre_faults, "post_faults": post_faults}, f, indent=1)
     print("\nsaved analysis/early_commit_rows.json")

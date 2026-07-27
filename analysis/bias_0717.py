@@ -5,9 +5,10 @@ morning (pre camera reconfig) vs evening (post) - a frame shift appears as a
 consistent evening-only bias matching (1). Uses caught throws' last-seen
 vector too as a weaker check."""
 import json, glob
+import pathlib
 import numpy as np
 
-base = "/home/erkka/codeprojects/OPTITRACK/"
+base = str(pathlib.Path(__file__).resolve().parent.parent) + "/"
 d0 = json.load(open(base+"T_base_from_mocap.json"))
 d1 = json.load(open(base+"T_base_from_mocap_marker.json"))
 R0,t0 = np.array(d0["R"]), np.array(d0["t"])

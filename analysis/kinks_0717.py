@@ -5,9 +5,12 @@ catch plane -> 'ballistic truth'.  Compare (a) committed target vs ballistic
 truth (real prediction error), (b) recorded crossing vs ballistic truth
 (deflection magnitude), and (c) min distance ball-to-committed-target."""
 import json, glob
+import pathlib
 import numpy as np
 
-T = json.load(open("/home/erkka/codeprojects/OPTITRACK/T_base_from_mocap.json"))
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+T = json.load(open(REPO_ROOT / "T_base_from_mocap.json"))
 R = np.array(T["R"]); tv = np.array(T["t"])
 def to_base(p): return R @ np.asarray(p) + tv
 
@@ -32,7 +35,7 @@ def recorded_crossing(raw, plane):
             return (t0+a*(t1-t0), np.array([x0+a*(x1-x0), plane, z0+a*(z1-z0)]))
     return None
 
-sessions = sorted(glob.glob("/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260717_*.jsonl"))
+sessions = sorted(glob.glob(str(REPO_ROOT / "catch_logs/catch_log_20260717_*.jsonl")))
 print(f"{'sess':>6} {'thr':>3} {'pred_err_ballistic':>18} {'deflection':>10} {'min_d_tgt':>9} {'kink?':>6} verdict")
 rows=[]
 for path in sessions:

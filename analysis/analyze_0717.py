@@ -7,12 +7,13 @@ committed target and (b) the arm TCP at throw end. Also compute yaw-follow
 azimuth deltas actually commanded, and classify why non-attempted throws
 never committed.
 """
-import json, glob, math, sys
+import json, glob, math, sys, pathlib
 import numpy as np
 
-sys.path.insert(0, "/home/erkka/codeprojects/OPTITRACK")
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 # transform used by ALL sessions (confirmed from run_start)
-T = json.load(open("/home/erkka/codeprojects/OPTITRACK/T_base_from_mocap.json"))
+T = json.load(open(REPO_ROOT / "T_base_from_mocap.json"))
 R = np.array(T["R"]); t = np.array(T["t"])
 
 def fmt(v):
@@ -36,7 +37,7 @@ def plane_crossing(raw, plane_y, falling_only=True):
             return best
     return best
 
-sessions = sorted(glob.glob("/home/erkka/codeprojects/OPTITRACK/catch_logs/catch_log_20260717_*.jsonl"))
+sessions = sorted(glob.glob(str(REPO_ROOT / "catch_logs/catch_log_20260717_*.jsonl")))
 
 overall = []
 for path in sessions:
