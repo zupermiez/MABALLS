@@ -85,6 +85,7 @@ from frames import mocap_point_to_base, quat_to_matrix, base_from_mocap_via_rigi
 from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script, movej_to_pose_script
 from calibrate_frames import send_urscript, set_tcp_script
 from verify_base_rb import BaseRBState, make_base_rb_handler, BASE_RB_LOCK
+from calibrate_base_rb import CaptureState, make_handler as make_base_rb_capture_handler, average_pose
 from ur_servo import (
     RateLimiter, OrientationRateLimiter, ServoStream, HOST_IP as SERVO_HOST_IP,
     HOST_PORT as SERVO_HOST_PORT, DEFAULT_GAIN as SERVO_DEFAULT_GAIN,
@@ -114,11 +115,47 @@ from catch_feasibility import (
 # of workspace rather than guess at it.
 CATCH_MIN_REACH = 0.45   # m from base - inside this is near-singular / too close to the body
 CATCH_MAX_REACH = 1.20   # m from base - was 1.00; user directive 2026-07-15: attempt catches out to 1.20m
-CATCH_Z_MIN = -0.25      # m base-frame - below this the tool reaches down toward the 1m platform deck / floor
+# CATCH_Z_MIN raised -0.25->0.119 2026-07-27: a real collision (paint scraped off the
+# wrist3 housing against the base's mounting stand, C157A1 fault) was traced to a
+# commit/return-to-wait target that dropped to z=-0.09m - the old floor let the tool
+# go 39cm below DEFAULT_WAIT_POSE's z (0.139m). User confirms (from the physical rig)
+# that AT the wait-pose height, close reach only risks brushing the base joint itself
+# (minor); going even 5cm below that height is what brings the tool into the stand's
+# footprint. New floor is DEFAULT_WAIT_POSE z minus a 2cm buffer under that 5cm
+# danger mark (0.139 - 0.02 = 0.119), applied as a flat cutoff regardless of reach -
+# this trades away catching low throws far from the base (which were never actually
+# near the stand) for a much simpler, physically-grounded rule. CATCH_MIN_REACH left
+# at 0.45m per the same reasoning: it isn't what caused this incident.
+CATCH_Z_MIN = 0.119      # m base-frame - below this the tool can reach the mounting stand (see above)
 CATCH_Z_MAX = 0.55       # m base-frame - above this heads toward the overhead shoulder singularity (slow, imprecise)
 # MAX_CATCH_MOVE (was 0.60m, capped distance from the wait pose) removed 2026-07-15 per
 # user directive - only the reach/z band above now bounds a catch target, so any target
 # within CATCH_MAX_REACH is attempted regardless of distance from the wait pose.
+
+# A servo_hold (see emit_setpoint) that outlives this is worth escalating loudly: it
+# means the limiter's own reach/z braking isn't resolving the violation on its own tick
+# over tick, which is exactly the silent-stall shape of the 2026-07-27 incident. Same
+# duration as ur_servo.DEFAULT_SOCK_TIMEOUT - by then it's taken as long as plain
+# silence would need to kill the setpoint stream outright.
+SERVO_HOLD_STUCK_S = DEFAULT_SOCK_TIMEOUT
+
+# Chase-abort (2026-07-27): a committed throw whose feasibility margin stays negative
+# and keeps failing to improve, tick over tick, is one that was never catchable - the
+# continuous servo retarget (and, for movel/movej, re-aim) would otherwise keep pulling
+# the setpoint toward a target that's still nominally inside the reach/z/azimuth
+# envelope (check_catch_envelope) but whose TIME budget is only getting worse, chasing
+# a degrading/noisy fit right up to the moment of impact. Real incident 2026-07-27: a
+# throw ~70-90cm outside the reachable zone the whole flight (margin -0.3s to -0.9s,
+# never improving) was chased this way into a hard robot-side fault (C306A3, invalid
+# accel target) and a full power/brake cutoff (C305A15/16/17) - see docs/debug_log.md.
+# Once ABORT_NON_IMPROVING_TICKS consecutive post-commit ticks fail to improve on the
+# margin, the throw is abandoned: the setpoint simply stops being updated (holds where
+# it is) for the rest of that throw. This is a strictly more conservative behavior than
+# today's (which chases until the ball lands or a fault intervenes), so it defaults on.
+ABORT_NON_IMPROVING_TICKS = 8   # ~0.16s at the default --poll-hz 50 - short, but long
+                                # enough that normal per-tick fit noise doesn't false-trigger
+ABORT_MARGIN_EPS = 0.005        # s - a margin improvement smaller than this still counts
+                                # as "not improving" (ignores sub-tick noise in the fit)
 
 # Default wait pose, full 6-DOF (base frame) - box taught upright, captured via
 # ur_get_pose.py 2026-07-15. Was position-only (0.0, -0.60, 0.10) with orientation
@@ -497,6 +534,61 @@ def derive_catch_plane(wait_xyz: np.ndarray, R: np.ndarray, t_vec: np.ndarray) -
     return float(p_mocap[1])  # mocap Y = up
 
 
+def resolve_live_base_rb_transform(server_ip, local_ip, unicast, base_rb_id, R_base_rb, t_base_rb,
+                                    timeout=10.0, settle_duration=1.0, std_limit=0.003):
+    """Connect to Motive just long enough to get a SETTLED reading of the base rigid
+    body, and derive base<-mocap from it, BEFORE the main NatNet client/loop exist.
+    Without this, derive_catch_plane() below would use whatever R,t got loaded from
+    the static --transform-file - fine normally, but wrong after the rig has been
+    physically moved (the whole point of --base-rb-transform), since that static file
+    reflects wherever the rig was when it was captured. Real incident 2026-07-24: rig
+    moved, catch.py run without --base-rb-transform at all (separate bug, just a
+    missing flag) - this fixes the deeper latent one that would have hit on the next
+    run even with the flag correctly passed.
+
+    Averages `settle_duration` seconds of samples once the RB is first seen valid,
+    via calibrate_base_rb.py's own average_pose() - NOT just the first valid frame.
+    Real incident 2026-07-27: after physically rotating the rig, a one-shot first
+    frame here was caught still-settling and biased catch_value by ~0.2m for an
+    entire session, even though the main loop's per-tick R,t (line ~1695, sampled
+    continuously) had by then converged to the true pose - the frozen catch_value
+    and the live per-tick transform silently disagreed, and every catch target
+    landed ~0.2m below the wait pose. See docs/debug_log.md 2026-07-27.
+
+    A short-lived second NatNet client is safe here: multicast supports multiple
+    simultaneous local subscribers (confirmed live 2026-07-24 while debugging a
+    stray-marker issue - two independent clients on this same machine each got a
+    full, undisturbed copy of the stream)."""
+    state = CaptureState(base_rb_id)
+    client = NatNetClient(server_ip_address=server_ip, local_ip_address=local_ip, use_multicast=not unicast)
+    client.on_data_frame_received_event.handlers.append(make_base_rb_capture_handler(state))
+    with client:
+        client.run_async()
+        state.capturing = True
+        start = time.monotonic()
+        first_valid_at = None
+        while time.monotonic() - start < timeout:
+            if any(v for _, _, v in state.samples) and first_valid_at is None:
+                first_valid_at = time.monotonic()
+            if first_valid_at is not None and time.monotonic() - first_valid_at >= settle_duration:
+                break
+            time.sleep(0.02)
+        state.capturing = False
+    if first_valid_at is None:
+        raise SystemExit(f"Never saw a valid reading of base rigid body id={base_rb_id} within {timeout}s - "
+                          "check Motive streaming and that the rigid body is visible.")
+    pos_avg, quat_avg, pos_std, valid_ratio = average_pose(state.samples)
+    if pos_avg is None:
+        raise SystemExit(f"base rigid body id={base_rb_id} had no valid samples in the {settle_duration}s settle window.")
+    if np.any(pos_std > std_limit):
+        raise SystemExit(f"base rigid body id={base_rb_id} pose unstable over the {settle_duration}s settle "
+                          f"window (pos_std={pos_std}, limit={std_limit}) - the rig is still moving/settling "
+                          "(e.g. right after being bumped or repositioned). Wait for it to stop before "
+                          "starting catch.py.")
+    R_mocap_rb = quat_to_matrix(quat_avg)
+    return base_from_mocap_via_rigid_body(R_base_rb, t_base_rb, R_mocap_rb, pos_avg)
+
+
 class LastNormal:
     """Mutable box holding the wall-clock time check_safety_mode() last observed
     the robot in a NORMAL safety mode. Threaded through every check_safety_mode()
@@ -858,21 +950,19 @@ def main():
                              "pose height (recommended - keeps the plane through the wait pose).")
 
     # Transform / model -----------------------------------------------------------
-    parser.add_argument("--transform-file", default="T_base_from_mocap.json",
-                        help="T_base<-mocap from calibrate_frames.py")
-    parser.add_argument("--base-rb-transform", default=None,
-                        help="EXPERIMENTAL, not yet real-arm validated (2026-07-23) - opt-in only, "
-                             "off by default. Path to calibrate_base_rb.py's output "
-                             "(T_base_from_baseRB.json). When given, base<-mocap is recomputed every "
+    parser.add_argument("--transform-file", default="T_base_from_mocap_v2.json",
+                        help="T_base<-mocap from calibrate_frames.py (default T_base_from_mocap_v2.json, "
+                             "the current rig calibration since 2026-07-24 - see docs/debug_log.md)")
+    parser.add_argument("--base-rb-transform", default="T_base_from_baseRB_v2.json",
+                        help="Path to calibrate_base_rb.py's output (default T_base_from_baseRB_v2.json, "
+                             "on since 2026-07-27 - pass an empty string to fall back to the static "
+                             "--transform-file instead). When set, base<-mocap is recomputed every "
                              "tick from a second tracked rigid body mounted on the robot's fixed base "
                              "(frames.base_from_mocap_via_rigid_body) instead of loaded once from "
                              "--transform-file - lets the whole rig be physically repositioned between "
                              "sessions without rerunning calibrate_frames.py, as long as that rigid "
                              "body stays fixed to the base. --transform-file is still used for the "
-                             "catch plane / TCP offset / startup banner either way. A --dry-run pass is "
-                             "strongly recommended the first time this is used for real - it changes "
-                             "how the transform everything else (release guard, feasibility, envelope) "
-                             "is computed from, for the first time, on the live control path.")
+                             "catch plane / TCP offset / startup banner either way.")
     parser.add_argument("--speed-char-json", default=None,
                         help="speed_char.py JSON for the move-time model (default: newest in cwd)")
     parser.add_argument("--cruise-speed", type=float, default=DEFAULT_CRUISE_SPEED,
@@ -887,29 +977,26 @@ def main():
     # Motion ----------------------------------------------------------------------
     parser.add_argument("--speed", type=float, default=1.2, help="m/s commanded for the CATCH movel (controller clamps; default 1.2, the 2026-07-17 operating point)")
     parser.add_argument("--accel", type=float, default=4.0, help="m/s^2 for the catch movel (default 4.0, the 2026-07-17 operating point)")
-    parser.add_argument("--catch-move", choices=("movel", "movej", "servo"), default="movej",
-                        help="Motion primitive for the catch move. movej (default since 2026-07-17) moves in "
-                             "joint space (IK resolved robot-side via get_inverse_kin qnear=current joints, "
-                             "same proven path as the wait-pose approach) - it CANNOT violate joint limits by "
-                             "construction, fixing the side-throw protective stops movel was causing. movel "
-                             "holds a straight Cartesian line - but to a side target that forces base-joint "
-                             "speed = TCP speed / reach, which exceeds the 120deg/s base limit whenever the "
-                             "azimuth swing is large (the 2026-07-16 fault data: 3%% faults <10deg swing, 62%% "
-                             "at 20-35deg). Uses --catch-joint-speed/--catch-joint-accel, not --speed/--accel. "
-                             "NOTE (2026-07-17): suspected accuracy regression vs movel, not yet root-caused -"
-                             " see docs/debug_log.md 'movej accuracy' open question. "
-                             "servo (EXPERIMENTAL 2026-07-20, not yet real-arm validated) streams a "
-                             "continuously-retargeted servoj setpoint instead of firing a discrete move - "
-                             "see the --servo-* flags.")
+    parser.add_argument("--catch-move", choices=("movel", "movej", "servo"), default="servo",
+                        help="Motion primitive for the catch move. servo (default since 2026-07-27, in daily "
+                             "use since - continuous retargeting via servoj streaming, see the --servo-* "
+                             "flags) commits at one tick's latency and keeps pulling the setpoint toward "
+                             "the refined intercept, rather than firing a single discrete move. movej moves "
+                             "in joint space (IK resolved robot-side via get_inverse_kin qnear=current "
+                             "joints, same proven path as the wait-pose approach) - it CANNOT violate joint "
+                             "limits by construction, fixing the side-throw protective stops movel was "
+                             "causing. movel holds a straight Cartesian line - but to a side target that "
+                             "forces base-joint speed = TCP speed / reach, which exceeds the 120deg/s base "
+                             "limit whenever the azimuth swing is large (the 2026-07-16 fault data: 3%% "
+                             "faults <10deg swing, 62%% at 20-35deg). movej/movel use --catch-joint-speed/"
+                             "--catch-joint-accel or --speed/--accel respectively, not the --servo-* flags.")
 
     # Servo streaming (--catch-move servo) ----------------------------------------
-    parser.add_argument("--servo-max-speed", type=float, default=1.2,
-                        help="m/s cap for the servo setpoint stream (default 1.2, raised 2026-07-21 from "
-                             "the original half-ceiling 0.6 m/s first-validation value to match the "
-                             "movel/movej operating point --speed 1.2 - the same reliably-commandable "
-                             "ceiling speed_char.py measured, see CLAUDE.md hardware section). This is "
-                             "enforced host-side by ur_servo.RateLimiter, NOT by servoj, which has no "
-                             "speed limit of its own.")
+    parser.add_argument("--servo-max-speed", type=float, default=0.8,
+                        help="m/s cap for the servo setpoint stream (default 0.8 since 2026-07-27, pulled "
+                             "back down from the 1.2 movel/movej operating point ceiling as the day-to-day "
+                             "operating speed for servo mode). This is enforced host-side by "
+                             "ur_servo.RateLimiter, NOT by servoj, which has no speed limit of its own.")
     parser.add_argument("--servo-max-accel", type=float, default=4.0,
                         help="m/s^2 cap for the servo setpoint stream (default 4.0, raised 2026-07-21 "
                              "from 2.0 to match --accel's movel/movej operating point). Also sets the "
@@ -974,14 +1061,13 @@ def main():
                              "wait pose, so the (rotationally symmetric, mouth-up) tool pans with the base "
                              "instead of the wrist fighting to hold a fixed world orientation through a side "
                              "sweep. Paired with --catch-move movej.")
-    parser.add_argument("--tilt-follow", type=float, default=0.0, metavar="DEG",
-                        help="EXPERIMENTAL (2026-07-18, off by default, not yet real-arm validated): "
-                             "tilt the tool mouth into the incoming ball trajectory by up to DEG "
-                             "degrees (e.g. 20). Recovers the aperture lost to a slanted approach "
-                             "(cos(incidence)) and makes the wrist visibly track the throw - "
-                             "yaw-follow alone keeps wrist joints deliberately still, which is why "
-                             "no wrist motion was visible on 2026-07-17. Composes on top of "
-                             "yaw-follow. Watch IK reachability near the envelope edge on first use.")
+    parser.add_argument("--tilt-follow", type=float, default=20.0, metavar="DEG",
+                        help="Tilt the tool mouth into the incoming ball trajectory by up to DEG degrees "
+                             "(default 20, on by daily use since 2026-07-27; pass 0 to disable). Recovers "
+                             "the aperture lost to a slanted approach (cos(incidence)) and makes the wrist "
+                             "visibly track the throw - yaw-follow alone keeps wrist joints deliberately "
+                             "still, which is why no wrist motion was visible on 2026-07-17. Composes on "
+                             "top of yaw-follow. Watch IK reachability near the envelope edge.")
     parser.add_argument("--approach-speed", type=float, default=1.5,
                         help="rad/s (joint-space - this move is a movej, not a movel, see move_to()) "
                              "for the move to/return-to wait pose (default 1.5, the 2026-07-17 operating "
@@ -1057,15 +1143,34 @@ def main():
                         help="m agreement threshold for the --stability-window average to be used as "
                              "the commit target point (default 0.08) - does not delay commit timing")
 
+    # Visualization ------------------------------------------------------------
+    parser.add_argument("--no-plot", action="store_true",
+                        help="Skip the live throw-plot window. By default (on since 2026-07-27) a live "
+                             "pop-up window (throw_plot.ThrowPlotWindow, same TkAgg backend as "
+                             "visualize_trajectory.py) opens and updates once after each throw with a "
+                             "2-panel view (top-down X-Y + reach/height side profile) of the ball's actual "
+                             "trajectory, the robot's actual TCP path, and how the commit/re-aim/"
+                             "servo-retarget target guesses converged toward the true catch point (colored "
+                             "light->dark by fraction of the throw observed when each guess was made). The "
+                             "window is updated synchronously from this poll loop (an interactive matplotlib "
+                             "backend can't safely be driven from a background thread) - every artist is "
+                             "pre-allocated once at startup and only mutated in place per throw, which "
+                             "measured ~90-130ms per update (~2.5x margin under ur_servo.DEFAULT_SOCK_TIMEOUT's "
+                             "0.3s) even in --catch-move servo. Data collection itself (per-tick TCP pose, "
+                             "per-guess target) is free the rest of the time - it reuses values the "
+                             "feasibility/commit logic already computes every tick regardless of this flag. "
+                             "Closing the window just stops future updates; the session keeps running.")
+
     parser.add_argument("--dry-run", action="store_true",
                         help="Log every decision but send NO motion at all (not even the initial positioning). "
                              "Use first to validate wait pose / plane / gating against your replay.")
-    parser.add_argument("--record", action="store_true",
-                        help="Record every feasibility tick, gate/commit/refuse decision, throw "
-                             "start/end, robot move, and the raw per-throw ball trajectory to a "
-                             "compact JSONL log file (catch_logs/catch_log_<timestamp>.jsonl, "
-                             "auto-named) for later analysis - no Motive replay needed, the raw "
-                             "trajectory is in the log itself - see CLAUDE.md 'Run recording'.")
+    parser.add_argument("--no-record", action="store_true",
+                        help="Skip recording. By default (on since 2026-07-27) every feasibility tick, "
+                             "gate/commit/refuse decision, throw start/end, robot move, and the raw "
+                             "per-throw ball trajectory is written to a compact JSONL log file "
+                             "(catch_logs/catch_log_<timestamp>.jsonl, auto-named) for later analysis - "
+                             "no Motive replay needed, the raw trajectory is in the log itself - see "
+                             "CLAUDE.md 'Run recording'.")
     parser.add_argument("--yes", action="store_true", help="Skip the pre-motion confirmation prompt")
     parser.add_argument("--poll-hz", type=float, default=None,
                         help="Feasibility-check rate during flight (default 50, or --servo-rate when "
@@ -1081,6 +1186,7 @@ def main():
     parser.add_argument("--no-beep", action="store_true",
                         help="Disable audio cues for predict/reaim/catch/miss events")
     args = parser.parse_args()
+    args.plot = not args.no_plot  # --plot renamed to on-by-default --no-plot 2026-07-27; args.plot kept as the internal flag
 
     servo_mode = args.catch_move == "servo"
     if servo_mode and args.early_commit_samples < 3:
@@ -1101,7 +1207,7 @@ def main():
         args.poll_hz = args.servo_rate if servo_mode else 50.0
 
     record_path = None
-    if args.record:
+    if not args.no_record:
         os.makedirs(CATCH_LOG_DIR, exist_ok=True)
         record_path = os.path.join(CATCH_LOG_DIR, f"catch_log_{time.strftime('%Y%m%d_%H%M%S')}.jsonl")
     rec = Recorder(record_path)
@@ -1116,7 +1222,7 @@ def main():
     with open(args.transform_file) as f:
         tcp_offset = json.load(f)["tcp_offset"]
 
-    base_rb_mode = args.base_rb_transform is not None
+    base_rb_mode = bool(args.base_rb_transform)  # "" (--base-rb-transform "") opts out of the on-by-default file
     R_base_rb = t_base_rb = base_rb_id = None
     if base_rb_mode:
         with open(args.base_rb_transform) as f:
@@ -1127,6 +1233,12 @@ def main():
         print(f"[EXPERIMENTAL] base<-mocap will be recomputed every tick from rigid body "
               f"id={base_rb_id} (--base-rb-transform {args.base_rb_transform}), not loaded static from "
               f"{args.transform_file}. Not yet validated on the real arm - see --base-rb-transform help.")
+        print(f"[EXPERIMENTAL] getting one live reading of rigid body id={base_rb_id} now, so the catch "
+              f"plane below is derived from the rig's CURRENT position rather than {args.transform_file}'s "
+              f"static (possibly stale, e.g. after a rig move) snapshot...")
+        R, t_vec = resolve_live_base_rb_transform(args.server_ip, args.local_ip, args.unicast, base_rb_id,
+                                                   R_base_rb, t_base_rb)
+        print("[EXPERIMENTAL] live base<-mocap resolved.")
 
     print(f"connecting to robot at {args.robot_ip} ...")
     rtde_r = rtde_receive.RTDEReceiveInterface(args.robot_ip)
@@ -1184,6 +1296,20 @@ def main():
 
     catch_axis_idx = 1  # mocap Y (up)
     catch_value = args.catch_value if args.catch_value is not None else derive_catch_plane(wait_xyz, R, t_vec)
+
+    # --plot: a live pop-up window (throw_plot.ThrowPlotWindow), not a saved file - see
+    # its module docstring for why it has to be driven synchronously from THIS thread
+    # (main) rather than a background worker. Built here (as soon as wait_xyz/the catch
+    # envelope constants are known) so it's already on screen during the "type 'go'"
+    # confirmation prompt below, not just once the first throw happens.
+    plot_window = None
+    if args.plot:
+        from throw_plot import ThrowPlotWindow
+        plot_window = ThrowPlotWindow(wait_xyz, dict(
+            reach_min=CATCH_MIN_REACH, reach_max=CATCH_MAX_REACH,
+            z_min=CATCH_Z_MIN, z_max=CATCH_Z_MAX, max_azimuth_deg=CATCH_MAX_AZIMUTH_DEG,
+        ))
+        print("live throw-plot window open (updates once per throw; close it any time - the session keeps running)")
 
     print("=" * 78)
     print("CATCH - REAL ARM MOTION" + ("  [DRY RUN - no motion]" if args.dry_run else ""))
@@ -1364,7 +1490,8 @@ def main():
         can spin indefinitely, so that one would reliably kill the stream.
         No-op unless the stream is up, so non-servo modes pay nothing.
         """
-        nonlocal servo_target, servo_hold_logged, last_tick_mono, last_servo_logged
+        nonlocal servo_target, servo_hold_logged, servo_hold_since, servo_hold_escalated, \
+            last_tick_mono, last_servo_logged
         if limiter is None:
             return  # not servo mode (or the stream is down after a fault)
 
@@ -1403,11 +1530,24 @@ def main():
             # still run (so a replay session validates exactly the setpoint path a
             # live run would take), only the send is skipped.
             alive = stream.send(list(cmd_xyz) + cmd_orient, servo=True) if stream else True
+            servo_hold_since = None
+            servo_hold_escalated = False
         else:
             here_pose = list(rtde_r.getActualTCPPose())
             here_xyz = np.array(here_pose[:3])
+            # Reset the limiter's internal position/velocity state to where the robot
+            # actually is, so next tick's step() recomputes fresh from a real, in-bounds
+            # starting point - but do NOT touch servo_target. servo_target is the
+            # caller's real destination (wait pose or a catch intercept); overwriting it
+            # with "wherever we are right now" used to abandon that destination
+            # silently and permanently (2026-07-27 incident: a hold fired once during
+            # return-to-wait, servo_target got reset to the hold position, and the arm
+            # just sat there - parked right next to the base's mounting stand - for the
+            # rest of the throw instead of continuing home; see docs/debug_log.md).
+            # Leaving servo_target alone lets the limiter's own reach/z braking
+            # (reach_bounds/z_bounds, see ur_servo.RateLimiter) try again toward the
+            # real target every tick instead of giving up after the first violation.
             limiter.reset(here_xyz)
-            servo_target = here_xyz.copy()
             # Freeze orientation at its actual current value too, same reasoning as
             # the position freeze just above - otherwise orientation would keep
             # advancing toward servo_orient while position is stuck on an envelope
@@ -1419,7 +1559,19 @@ def main():
             if not servo_hold_logged:
                 print(f"    >> SERVO HOLD (envelope): {env}")
                 servo_hold_logged = True
-            rec.log("servo_hold", reason=env, cmd=cmd_xyz)
+            if servo_hold_since is None:
+                servo_hold_since = now_t
+            hold_duration = now_t - servo_hold_since
+            rec.log("servo_hold", reason=env, cmd=cmd_xyz, duration_s=round(hold_duration, 3))
+            # A hold that outlives SERVO_HOLD_STUCK_S means the limiter's own braking
+            # isn't resolving this tick over tick - loud, not just the one-line
+            # "SERVO HOLD" print above, since this is the failure mode that produced a
+            # silent multi-hundred-ms stall next to the base in the 2026-07-27 incident.
+            if not servo_hold_escalated and hold_duration >= SERVO_HOLD_STUCK_S:
+                print(f"    !! servo hold stuck for {hold_duration:.1f}s (envelope: {env}) - "
+                      f"limiter's reach/z braking isn't clearing this on its own")
+                rec.log("servo_hold_stuck", reason=env, duration_s=round(hold_duration, 3))
+                servo_hold_escalated = True
 
         # Record the commanded setpoint whenever it has actually moved. Distance-
         # gated rather than time-gated: it logs densely through a catch (which is
@@ -1475,13 +1627,20 @@ def main():
     guard_reason = None         # non-None: this throw failed the release guard, never commit
     committed_target = None     # base-frame xyz the last commit/re-aim was sent to
     reaim_count = 0             # correction moves sent for the current throw
+    prev_margin = None          # result.margin on the last post-commit tick (abort trend, see below)
+    non_improving_streak = 0    # consecutive post-commit ticks with a flat-or-worse negative margin
+    abandoned = False           # True once the current throw's chase has been given up on
     catches = 0                 # session tally: attempted throws whose ball was last seen at the tool
     attempts_ended = 0          # attempted throws that reached throw_end (denominator for the tally)
     last_print_wall = 0.0       # console print throttle (ticks are recorded regardless)
     last_safety_check = 0.0     # monotonic time of the last dashboard safety query
     servo_hold_logged = False   # throttle envelope-hold spam within one throw
+    servo_hold_since = None     # monotonic time the current unbroken hold streak started, or None
+    servo_hold_escalated = False  # throttle the "stuck" escalation to once per hold streak
     last_flight_logged = None   # FlightRecord already given a throw_end/throw_samples (dedup
                                 # between the normal flight->idle path and the post-fault path)
+    throw_tcp_trace: List[tuple] = []   # --plot only: [(n_ball_samples, tcp_xyz), ...] this throw
+    throw_guesses: List[dict] = []      # --plot only: [{"n","point","kind","verdict"}, ...] this throw
     PRINT_MIN_INTERVAL_S = 0.08  # ~12 lines/s max during flight - readable at --poll-hz 50
     # A ball that disappears within this of the tool was (almost certainly) swallowed
     # by the box - it occludes its own markers. Validated against all 74 classifiable
@@ -1536,6 +1695,13 @@ def main():
                     stop_reason = "user_enter"
                     break
 
+                # Cheap (~0.1ms) - run every iteration regardless of which branch/
+                # continue below fires, so the window stays responsive to resize/
+                # close between throws instead of only reacting at the next
+                # plot_window.update() (which may be many seconds away).
+                if plot_window is not None:
+                    plot_window.pump()
+
                 # Catches a fault from the fire-and-forget catch movel too (that path
                 # sends via raw send_script(), not move_to(), so it has no built-in
                 # settle/fault check of its own) - within one poll interval of it
@@ -1575,17 +1741,46 @@ def main():
                         attempted = False
                         refuse_logged = False
                         servo_hold_logged = False
+                        servo_hold_since = None
+                        servo_hold_escalated = False
                         guard_reason = None
                         committed_target = None
                         reaim_count = 0
+                        prev_margin = None
+                        non_improving_streak = 0
+                        abandoned = False
                         pred_window.clear()
+                        throw_tcp_trace = []
+                        throw_guesses = []
                         last_state = "idle"
                         # wait_for_fault_clear() has driven back to the wait pose with a
                         # movej; only now is it safe to re-open the stream (see the
                         # :30002-preempts-the-running-program invariant above).
                         if servo_mode and not args.dry_run:
                             print("    re-opening the servo stream...")
-                            start_servo_stream()
+                            try:
+                                start_servo_stream()
+                            except SystemExit as e:
+                                # ServoStream.start() raises SystemExit if the robot
+                                # never dials back within accept_timeout. A REAL fault
+                                # is exactly the case where this is most likely (robot
+                                # not yet back in RUNNING mode, Remote Control dropped,
+                                # etc.) and exactly the case whose logs matter most -
+                                # letting this SystemExit propagate uncaught used to
+                                # skip the try/finally's wrap_up_session() call below
+                                # entirely (SystemExit isn't KeyboardInterrupt, so the
+                                # loop's `except KeyboardInterrupt` didn't catch it,
+                                # and wrap_up_session() sits after the try/finally on
+                                # purpose - see its call site), so a real fault's own
+                                # log_history.txt/polyscope.log/flight report was never
+                                # pulled. End the session cleanly instead so the normal
+                                # finally + wrap_up_session still run. Real 2026-07-27
+                                # incident - see docs/debug_log.md.
+                                print(f"    !! could not re-open servo stream: {e}")
+                                print("    ending session here so the fault's logs can still be pulled.")
+                                rec.log("servo_stream", state="reopen_failed", reason=str(e))
+                                stop_reason = "servo_reconnect_failed"
+                                break
                         emit_setpoint()
                         continue
 
@@ -1620,12 +1815,32 @@ def main():
                     attempted = False
                     refuse_logged = False
                     servo_hold_logged = False
+                    servo_hold_since = None
+                    servo_hold_escalated = False
                     committed_target = None
                     reaim_count = 0
+                    prev_margin = None
+                    non_improving_streak = 0
+                    abandoned = False
                     pred_window.clear()
+                    throw_tcp_trace = []
+                    throw_guesses = []
                     rec.throw += 1
+                    if base_rb_mode and args.catch_value is None:
+                        # Re-derive against the CURRENT live transform (just refreshed above)
+                        # rather than trusting whatever resolve_live_base_rb_transform() saw
+                        # before the loop even started - self-corrects if the rig gets bumped
+                        # mid-session, and if that startup reading was itself still-settling
+                        # (the 2026-07-27 incident this guards against - see
+                        # resolve_live_base_rb_transform's docstring).
+                        new_catch_value = derive_catch_plane(wait_xyz, R, t_vec)
+                        if abs(new_catch_value - catch_value) > 0.01:
+                            print(f"    catch plane drifted: {catch_value:.4f} -> {new_catch_value:.4f} "
+                                  f"(mocap {AXIS_NAMES[catch_axis_idx]}) - re-deriving from live base RB")
+                        catch_value = new_catch_value
                     rec.log("throw_start", t=flight_buffer[-1].t if flight_buffer else None,
-                            rigid_body_id=target_id, arm_tcp=list(rtde_r.getActualTCPPose()))
+                            rigid_body_id=target_id, arm_tcp=list(rtde_r.getActualTCPPose()),
+                            catch_value=catch_value)
                     # Release guard: judged once, on the first ~10 samples, before any
                     # feasibility tick may commit - see check_release_guard().
                     guard_reason = check_release_guard(flight_buffer, R, t_vec,
@@ -1637,6 +1852,8 @@ def main():
 
                 if state == "flight" and guard_reason is None and len(flight_buffer) >= min_check_samples:
                     current_tcp_xyz = np.array(rtde_r.getActualTCPPose()[:3])  # RTDE FK only - never mocap
+                    if args.plot:
+                        throw_tcp_trace.append((len(flight_buffer), current_tcp_xyz.copy()))
                     result = check_feasibility(
                         flight_buffer, catch_axis_idx, catch_value, R, t_vec, current_tcp_xyz,
                         model, CATCH_MIN_REACH, CATCH_MAX_REACH, args.margin, args.box_radius,
@@ -1682,6 +1899,23 @@ def main():
                                 post_commit=attempted,
                                 commit_ready=len(flight_buffer) >= commit_samples_eff)
 
+                        # Chase-abort trend check - see ABORT_NON_IMPROVING_TICKS above. Only
+                        # meaningful once a catch has actually been committed; a negative margin
+                        # before that is just the normal wait for the gate to open.
+                        if attempted and not abandoned and result.margin is not None:
+                            if result.margin < 0 and (prev_margin is None
+                                                       or result.margin <= prev_margin + ABORT_MARGIN_EPS):
+                                non_improving_streak += 1
+                            else:
+                                non_improving_streak = 0
+                            prev_margin = result.margin
+                            if non_improving_streak >= ABORT_NON_IMPROVING_TICKS:
+                                abandoned = True
+                                print(f"    >> ABORT: margin not improving for {non_improving_streak} ticks "
+                                      f"(last margin={result.margin:+.3f}s) - holding, no longer chasing this throw")
+                                rec.log("abort", t=flight_buffer[-1].t, n=result.n_samples,
+                                        margin=result.margin, streak=non_improving_streak)
+
                         if not attempted and (gate or servo_mode) and len(flight_buffer) >= commit_samples_eff:
                             orient = target_orientation(commit_point, result.impact_vel_base)
                             target_pose = [float(commit_point[0]), float(commit_point[1]), float(commit_point[2]),
@@ -1720,8 +1954,12 @@ def main():
                                     send_script(catch_move_script(target_pose))
                                 committed_target = np.array(commit_point, dtype=float)
                                 attempted = True
+                                if args.plot:
+                                    throw_guesses.append({"n": result.n_samples,
+                                                         "point": np.array(commit_point, dtype=float),
+                                                         "kind": "commit", "verdict": verdict})
 
-                        elif attempted and servo_mode and committed_target is not None:
+                        elif attempted and not abandoned and servo_mode and committed_target is not None:
                             # Continuous retargeting - servo mode's replacement for the
                             # whole re-aim mechanism. Re-aim existed because a discrete
                             # move had to FINISH before another could sensibly start,
@@ -1755,8 +1993,12 @@ def main():
                                                 t_impact=result.time_to_impact)
                                         if not args.no_beep:
                                             beep.play("reaim")
+                                        if args.plot:
+                                            throw_guesses.append({"n": result.n_samples,
+                                                                 "point": np.array(new_point, dtype=float),
+                                                                 "kind": "retarget", "verdict": None})
 
-                        elif (attempted and not args.no_reaim and committed_target is not None
+                        elif (attempted and not abandoned and not args.no_reaim and committed_target is not None
                               and reaim_count < args.reaim_max_count):
                             # Post-commit re-aim: the commit above fired at the earliest
                             # eligible tick, on a deliberately-early (noisy) prediction. The
@@ -1803,6 +2045,10 @@ def main():
                                     if not args.dry_run:
                                         send_script(catch_move_script(corr_pose, preempt=preempting))
                                     committed_target = np.array(new_point, dtype=float)
+                                    if args.plot:
+                                        throw_guesses.append({"n": result.n_samples,
+                                                             "point": np.array(new_point, dtype=float),
+                                                             "kind": "reaim", "verdict": None})
                     else:
                         rec.log("tick", t=flight_buffer[-1].t, n=result.n_samples, verdict="no_crossing",
                                 note=result.note)
@@ -1864,6 +2110,19 @@ def main():
                     if history_head is not None and history_head.raw_samples:
                         rec.log("throw_samples", t=history_head.raw_samples[0].t,
                                 raw=[[s.t, s.x, s.y, s.z] for s in history_head.raw_samples])
+                    if plot_window is not None and history_head is not None and history_head.raw_samples:
+                        ball_base = np.array([
+                            mocap_point_to_base(np.array([s.x, s.y, s.z]), R, t_vec)
+                            for s in history_head.raw_samples
+                        ])
+                        ball_t = np.array([s.t for s in history_head.raw_samples])
+                        plot_window.update(
+                            rec.throw, ball_base, ball_t, throw_tcp_trace, throw_guesses,
+                            meta=dict(attempted=attempted, caught_guess=caught_guess,
+                                     ball_last_dist_m=ball_last_dist, duration=history_head.duration,
+                                     samples=history_head.samples, catch_move=args.catch_move,
+                                     dry_run=args.dry_run, reason=history_head.reason),
+                        )
                     if servo_mode:
                         # Just re-aim the stream at the wait pose - no blocking movej,
                         # so the loop stays live for the next throw while the arm is
@@ -1927,6 +2186,14 @@ def main():
             rtde_r.disconnect()
             dash.disconnect()
             rec.close()
+            if plot_window is not None:
+                # Deliberately not closed here - left open (already showing the last
+                # throw's plot, up to date as of its own update() call) so it's still
+                # visible during wrap_up_session()'s name/description prompts below.
+                # A non-blocking Tk window doesn't keep the process alive on its own
+                # (nothing here ever called mainloop()), so it just disappears with
+                # the rest of the process at exit - nothing to explicitly tear down.
+                print("throw-plot window left open (showing the last throw).")
 
     # Deliberately outside the try/finally above and after the NatNet/RTDE
     # connections are fully closed - see wrap_up_session()'s docstring and the

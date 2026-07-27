@@ -4,3 +4,4 @@ __pycache__/
 catch_logs/
 robot_logs/
 servo_logs/
+throw_plots/

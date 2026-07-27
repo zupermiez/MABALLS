@@ -1400,3 +1400,231 @@ but not sufficient per the project's validation policy. Still needed before
 `--catch-move servo` touches the real arm: `catch.py --dry-run` against a
 live Motive replay (this session had no access to Motive or the robot), then
 a real 0.6 m/s session, per the existing recommended order in `CLAUDE.md`.
+
+## 2026-07-21 — `ur_servo.py --self-test` FIXED: final-approach deadband, not the accel-search/geometric-term interaction originally suspected
+
+Root cause of the remaining self-test failure: the final-approach deadband in
+`RateLimiter.step()` snapped straight to the target and zeroed `prev_v_*`
+unconditionally, with no check that doing so was itself accel-consistent.
+That let a still-jittering (not-yet-converged) predicted target re-trigger the
+snap almost every tick, and separately let a real, still-substantial velocity
+get discarded to a fictitious 0 baseline — both producing real discontinuities
+in the commanded stream (measured 25-108 m/s² against 2-4 m/s² caps).
+
+Fix: gate the snap on the acceleration it would itself imply (same polar
+decomposition the main accel search uses) and, when taken, carry the velocity
+actually used forward as `prev_v_*` instead of zeroing it. Self-test passes;
+a 30-seed×150-throw sweep plateaus at the pre-existing documented ~2.15x
+residual, not a new spike. Traded off: braking overshoot at 1.2 m/s rose from
+2.4mm to 4.8mm (deadband no longer snaps unconditionally) — no longer
+comfortably inside the 4.25mm calibration RMSE, worth watching for a catch-
+accuracy regression. `--catch-move servo` itself was still unvalidated on the
+real arm as of this entry — see the 2026-07-27 entry below for that
+validation.
+
+## 2026-07-22 — servo orientation rate limiting: base-joint snap traced and fixed
+
+Investigated the "oscillating to come to a stop" behavior and base-joint
+accel-limit faults seen in real 2026-07-21/22 sessions, present regardless of
+`--servo-max-speed`/`--servo-max-accel`. Root cause: `RateLimiter.step()`
+bounded `cmd_xyz` only — `servo_orient` (yaw-follow/tilt-follow) was sent raw
+every tick, snapping the full commit-instant yaw delta straight onto the
+**base joint** in one tick (`yaw_follow_orientation()` rotates about base Z by
+design, to keep the wrist still), so IK had to reconcile "position still near
+the wait pose" with "orientation already at the final azimuth" in ~8ms.
+
+Fix: `ur_servo.OrientationRateLimiter` (new class, alongside `RateLimiter`)
+slew-limits the rotation vector the same way — speed-capped, accel-capped,
+braking smoothly toward a held target via the same `sqrt(2*a*margin)` form
+`RateLimiter._brake_cap` uses — wired into `catch.py`'s `emit_setpoint()`
+alongside the position limiter, defaulting to the same rate budget as
+`--servo-base-rate-deg-s` (`--servo-orient-max-rate-deg-s` to override).
+Unlike `RateLimiter`, target-overshoot is *not* treated as a hard bound
+(mirroring `RateLimiter._axis_cap`'s own stated philosophy — smooth
+acceleration is the real safety property, not landing exactly on target), so
+this is a single 1D blend, no cylindrical-coordinate machinery needed.
+
+Self-tested (`ur_servo.py --self-test`, parts 7-8): the commit-instant snap is
+exact from the first tick (matches the actual bug); a bounded, understood
+tail-convergence residual remains when a HELD-STILL target finishes converging
+(up to ~4.7x the accel cap for one tick, vs `RateLimiter`'s own documented,
+accepted 2.15x residual for the same class of discrete-time
+`sqrt(2*a*margin)`-braking artifact — worse here only because this class
+defaults to a punchier 0.15s rate-to-accel ramp, matching `RateLimiter`'s own
+`max_base_accel` convention, not its gentler ~0.3s one). Offline replay of the
+2026-07-21/22 fault sessions through the new limiter showed a ~2.3x larger
+commit-instant orientation jump on faulted throws vs non-faulted ones, and the
+new limiter cutting worst-case commanded accel by 50-500x — circumstantial,
+not a live confirmation at the time. **Validated clean on the real arm
+2026-07-27** — see that entry below, along with `--reaim-preempt` and
+`--tilt-follow`, both of which also passed that session with no faults.
+
+## 2026-07-27 — real collision with the base mounting stand, two related silent-failure bugs found and fixed, `--plot` added
+
+Session context: this was also the real-arm validation run for early-commit
+`--catch-move servo`, `--reaim-preempt`, `--tilt-follow`, and servo orientation
+rate limiting (see the 2026-07-21/22 entries above) — all four passed clean,
+no faults. Also: the ping pong ball / smaller cardboard box swap was tested
+and recalibrated this session (`tcp_offset`/RMSE came out essentially
+unchanged from the prior box, ~0.0725m / ~4.25mm).
+
+Real arm session ended in the tool scraping paint off the wrist3 housing
+against the rig's own base mounting stand (`C157A1` fault). Traced to a
+commit/return-to-wait target that dropped to `z=-0.09m` in base frame — the
+old `CATCH_Z_MIN=-0.25` let the tool go 39cm below `DEFAULT_WAIT_POSE`'s
+`z=0.139`. Per the physical rig (user confirmed): at wait-pose height, close
+reach only risks brushing the base joint itself (minor); it's going *below*
+that height that brings the tool into the stand's footprint.
+
+**Fix**: `CATCH_Z_MIN` raised `-0.25 → 0.119` (`catch.py`) — wait-pose z minus
+a 2cm buffer under a 5cm danger mark (`0.139 - 0.02 = 0.119`), a flat cutoff
+regardless of reach. `CATCH_MIN_REACH` left at 0.45m — not implicated in this
+incident. Trade-off: this gives up catching low throws far from the base
+(never actually near the stand), in exchange for a much simpler,
+physically-grounded rule.
+
+**Bug 1 — base-RB live transform biased by a one-shot first-frame read.**
+`--base-rb-transform` (see the base-RB-relative calibration work, prior
+commit) recomputes `base<-mocap` from the base rigid body every tick once the
+main loop is running, but the catch plane used to be derived once, before the
+loop starts, from whatever the *first* valid NatNet frame reported. After
+physically rotating the rig, that first frame was caught mid-settle and
+biased `catch_value` by ~0.2m for the entire session, even though the
+per-tick transform had by then converged — every catch target landed ~0.2m
+below the wait pose. Separate bug from the mounting-stand collision, but hit
+in the same session.
+
+Fix: `resolve_live_base_rb_transform()` opens a short-lived second NatNet
+client before the main loop/robot connection exist, waits for the base RB to
+report valid, then averages 1.0s of samples (`calibrate_base_rb.average_pose`)
+and requires `pos_std` under 3mm before accepting the reading — raises
+instead of silently proceeding if the rig is still visibly moving/settling.
+(Confirmed live: multicast supports multiple simultaneous local subscribers,
+so this second short-lived client doesn't disturb the main one started
+afterward.) Belt-and-suspenders: the main loop now also re-derives
+`catch_value` from the live per-tick transform at the start of every throw
+and logs+applies any drift >1cm, so a bad startup reading self-corrects
+instead of biasing the whole session.
+
+**Bug 2 — a servo envelope hold silently abandoned the destination.** In
+`--catch-move servo`, when a setpoint would violate the reach/z envelope,
+`emit_setpoint()` resets the `RateLimiter`'s internal position/velocity state
+to the robot's actual current pose (correct — recompute from a real in-bounds
+start) but was *also* overwriting `servo_target` with that same current
+position. That discarded the real destination (wait pose or catch intercept)
+permanently: after one envelope hold during return-to-wait, the arm just sat
+parked next to the mounting stand instead of continuing home. Fix: leave
+`servo_target` alone on a hold — only reset the limiter's internal state — so
+its own reach/z braking keeps retrying toward the real target every tick.
+Added `SERVO_HOLD_STUCK_S` (= `ur_servo.DEFAULT_SOCK_TIMEOUT`, 0.3s):a hold
+lasting that long now prints/logs a loud `servo_hold_stuck` escalation,
+since a hold that doesn't clear on its own is exactly this failure's shape.
+
+**Bug 3 — a fault-triggered servo-stream reconnect failure skipped log
+pulling.** `ServoStream.start()` raises `SystemExit` if the robot doesn't
+dial back within its accept timeout — realistically likeliest right after a
+real fault (robot not yet back in RUNNING, Remote Control dropped). An
+uncaught `SystemExit` isn't `KeyboardInterrupt`, so it skipped past the
+loop's exception handling and `wrap_up_session()` (deliberately placed after
+the `try/finally`) never ran — the fault's own `log_history.txt`/
+`polyscope.log`/flight report never got pulled. Fix: catch it, log a
+`servo_stream: reopen_failed` event, and end the session cleanly so the
+normal teardown + `wrap_up_session()` still runs.
+
+**`--plot` added (`throw_plot.py`, new file).** Off-by-default flag opening a
+live, persistent pop-up window (TkAgg, same backend `visualize_trajectory.py`
+uses) that updates once per throw: ball path, arm TCP path (RTDE FK), and
+every commit/re-aim/servo-retarget guess, all colored by a shared colormap
+normalized over *that throw's own* elapsed flight time (purple=early,
+orange/red=late). Must run synchronously on the main poll-loop thread —
+interactive matplotlib backends aren't thread-safe — so every artist is
+pre-allocated once and mutated in place (`set_data`/`set_offsets`/
+`set_segments`, never a fresh `Line2D`) to keep each update fast: measured
+~90-130ms, versus `--catch-move servo`'s 0.3s setpoint-stream silence budget.
+`pump()` (a bare `flush_events()`, ~0.1ms) runs every poll tick regardless of
+throw state so the window stays responsive to resize/close between throws.
+Window-closed exceptions are caught and swallowed — closing the plot must not
+take the catch session down with it. **Not yet validated in a real session**
+(exercised standalone/offline while building it — see `throw_plots/*.png`
+from an earlier PNG-per-throw prototype of this file, superseded by the
+live-window design — but not yet run through an actual `--catch-move servo`
+throw on the live arm).
+
+## 2026-07-27 (later) — Bug 3's own real-world fire: manual log pull, two fault causes distinguished, chase-abort added, servo defaults promoted
+
+The `SystemExit`/`wrap_up_session()` bug fixed earlier the same day (see Bug 3
+above) had already cost a session's own logs: a `--record --plot` real-arm run
+(servo mode, `--servo-max-speed 0.8`, `--tilt-follow 20`, live `--base-rb-
+transform`) hit two robot faults, and the second one's failed reconnect hit
+exactly that bug (fix landed same day, but after this run started). Pulled the
+session manually since `wrap_up_session()` never ran: local `catch_log_
+20260727_125525.jsonl` had both fault events with wall-clock timestamps;
+`ssh ur12e` confirmed `/root/log_history.txt`, `/root/polyscope.log`, and both
+`/root/flightreports/*.zip` were all still intact (faults were only ~13min
+old, nothing evicted yet) and `pull_robot_session_logs()`/
+`build_flight_report_manifest()` were called directly to land them in
+`robot_logs/sessions/20260727_125528_servo_dry_v2_realarm_faults/` the normal
+way. Lesson: the recent-fault window is short but not instant - a manual pull
+via the same functions `wrap_up_session()` calls is a fine fallback when the
+automatic path is known to have been skipped, no need to reproduce.
+
+**Two faults, two different causes - only one matches "chasing an unreachable
+throw":**
+- **Fault 1 (`C153A0`, "position deviates from path", base joint) landed
+  right after a real, on-track catch** - reach stayed 0.68-0.79m the whole
+  approach (well inside envelope), margin was positive and growing, the
+  ball's own flight ended `stopped (caught/landed)` at peak speed 7.17 m/s,
+  and the fault landed ~0.3s after last-known-normal. Matches the
+  already-diagnosed payload/CoG root cause (2026-07-16 entry above) - not a
+  chasing/envelope problem. No action taken here; watch for recurrence on
+  clean catches specifically.
+- **Fault 2 (hard fault) is the one that matters for this entry**: chain was
+  `C271A1` (a thread ran behind schedule) → `C306A3` ("Acceleration failed to
+  pass sanity check" - the robot rejected an invalid joint-accel value it
+  received) → `C281A3`/`C283A111`/`C309A6` (Go-to-Fault cascade) →
+  `C305A15/16/17` (main FET cut, powered through inrush resistors - a hard
+  brake-engaging power cutoff). Happened while continuously retargeting a
+  throw thrown 70-90cm outside the reachable zone for its entire flight
+  (margin -0.3s to -0.9s, never better). The reach/z/azimuth envelope clamp
+  (`check_catch_envelope`) *was* firing every tick (`SERVO HOLD (envelope)`
+  logged repeatedly) but didn't prevent the fault, because it only bounds
+  where the tool can end up - not whether the target it's given is even
+  trending toward a catch. The retarget kept re-solving from a noisy,
+  degrading fit near the envelope boundary, tick over tick, and something in
+  that churn produced the invalid accel value the robot's own sanity check
+  rejected.
+
+**Fix - chase-abort.** `catch.py` now tracks `result.margin` on every
+post-commit tick. If margin is negative and fails to improve by more than
+`ABORT_MARGIN_EPS` (0.005s) for `ABORT_NON_IMPROVING_TICKS` (8, ~0.16s at the
+default 50Hz poll rate) consecutive ticks, the throw is marked `abandoned`:
+the continuous-retarget branch (servo mode) and the re-aim branch (movel/
+movej mode) both stop updating the setpoint/sending corrections for the rest
+of that throw - the arm just holds where it is, and the existing envelope/
+hold/rate-limiter backstops still apply on top. Three bits of new per-throw
+state (`prev_margin`, `non_improving_streak`, `abandoned`), reset at both
+existing throw-reset points; two `elif` branches gained a `not abandoned`
+clause; one trend-check block inserted after the existing per-tick `tick`
+log line. Deliberately conservative-only (adds an abort path, never removes
+an existing safety check), so on by default with no opt-out flag - matches
+`SERVO_HOLD_STUCK_S`'s escalation-logging precedent from the earlier
+2026-07-27 entry above, which flagged this exact failure shape without yet
+fixing it. Does not address Fault 1 (unrelated mechanism). Not yet re-run
+against a real throw - the reasoning is direct from this session's own logs
+(would have tripped at the observed `n=113` tick, ~8 ticks before the
+observed `n=123`/fault), not a live confirmation.
+
+**Servo defaults promoted to the daily-driver operating point.** The command
+above had been typed by hand every session since 2026-07-20; `catch.py`'s
+argparse defaults now match it exactly, so a bare `python3 catch.py`
+reproduces it: `--catch-move servo` (was `movej`), `--servo-max-speed 0.8`
+(was 1.2 - the day-to-day speed, pulled back from the movel/movej ceiling),
+`--tilt-follow 20` (was 0/off), `--transform-file T_base_from_mocap_v2.json`
+(was the v1 file), `--base-rb-transform T_base_from_baseRB_v2.json` (was
+`None`/off - `base_rb_mode`'s off-sentinel changed from `is not None` to
+`bool(...)`, so `--base-rb-transform ""` is now how to opt back out to the
+static transform file), recording (`--record` → `--no-record`, inverted) and
+the live plot (`--plot` → `--no-plot`, inverted) both on by default.
+`--servo-max-accel` and `--rigid-body-id` were already at 4.0/3, unchanged.
+`--reaim-preempt` was deliberately left opt-in (see the "What's left" note in
+CLAUDE.md).

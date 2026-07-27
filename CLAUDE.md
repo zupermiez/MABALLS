@@ -36,15 +36,18 @@ directive, 2026-07-16.
 ## Concept
 
 A demo showing Universal Robots + OptiTrack working together in real time: humans throw
-objects (starting with tennis balls) at a UR12e arm, and the arm catches them. Goal is
-maximum "wow" factor as a technology demo, not industrial usefulness.
+objects at a UR12e arm, and the arm catches them. Goal is maximum "wow" factor as a
+technology demo, not industrial usefulness. Current ball/effector: a ping pong ball
+caught in a small cardboard box mounted on the arm (settled 2026-07-27; earlier
+prototyping used a tennis ball and a larger box/funnel — see Hardware Reference and
+Catch Integration).
 
 Working pipeline sketch:
 1. OptiTrack Flex 13 cameras track a thrown ball's 3D position at high frame rate.
 2. Software fits/predicts the ball's trajectory (projectile motion, drag optional) and
    extrapolates a catch point + time.
 3. A controller streams a target pose to the UR12e (via URScript/RTDE) fast enough for the
-   arm to move an end effector (net, cup, or soft gripper) into the intercept point before
+   arm to move the end effector (currently the box) into the intercept point before
    impact.
 4. Bonus: OptiTrack could also track the arm/end-effector itself (rigid body markers) for
    closed-loop correction instead of trusting UR forward kinematics alone.
@@ -77,10 +80,10 @@ revised as we prototype.
 - Footprint: Ø190 mm base, weighs 33.5 kg, IP54, PLd Category 3 safety functions
 - Control: URScript, RTDE for external streaming control, URCaps for extensions
 - **Catching implication**: TCP speed (~1.2 m/s reliably commanded, ~1.3 peak) is still
-  the binding constraint — a tennis ball thrown at any real pace covers the workspace far
+  the binding constraint — a ball thrown at any real pace covers the workspace far
   faster than the arm can reposition. ~30% more reach-rate than the earlier ~1 m/s budget,
   but the story is unchanged: throw speed/distance limits, minimized end-to-end reaction
-  latency, and/or a forgiving catch tool (net/funnel) over pinpoint placement. What
+  latency, and/or a forgiving catch tool (the box) over pinpoint placement. What
   actually gates feasibility is ramp-inclusive *move time* over a distance, not peak speed.
 
 ### OptiTrack Flex 13 (motion capture camera)
@@ -115,12 +118,13 @@ handles it correctly, version-adaptively.
 vs Motive fps, rigid bodies, marker sets, unlabeled markers. `python3 live_view.py`
 (Ctrl+C to stop, `--duration N` for bounded run).
 
-**Ball marker approach**: wrap the tennis ball entirely in retroreflective tape (not
-discrete stick-on markers) — a fully-coated sphere has the same angle-independent
-centroid property as OptiTrack's standard marker balls (holds only if the wrap stays
+**Ball marker approach**: wrap the ball entirely in retroreflective tape (not discrete
+stick-on markers) — a fully-coated sphere has the same angle-independent centroid
+property as OptiTrack's standard marker balls (holds only if the wrap stays
 smooth/seamless — wrinkles reintroduce off-axis bias). Only position is needed, not
-orientation, so a single tracked point suffices. Needs Motive's marker size threshold
-raised (default expects ~9-25mm, a tennis ball is ~67mm). In Motive: select the
+orientation, so a single tracked point suffices. Current ball is a ping pong ball
+(~40mm) — closer to Motive's default marker-size threshold (~9-25mm) than the earlier
+tennis ball (~67mm) was, so needs less threshold adjustment. In Motive: select the
 tracked point → right-click → create Rigid Body or single-point Marker asset.
 
 ## Trajectory Fitting
@@ -193,11 +197,11 @@ per-tick sample count/prediction/spread. Run with `python3 visualize_trajectory.
 
 **Current status: real motion is confirmed working via raw URScript sent directly
 over the robot's secondary client interface (port 30002) — no `ur_rtde`, no External
-Control URCap.** `ur_rtde` (the originally intended approach for high-rate streaming
-control) has not been gotten working on this robot/URCap combination — investigation
-paused, not abandoned; see `docs/debug_log.md` for the full troubleshooting history
-and untried next steps. Raw URScript-over-socket is what to use for anything on the
-real arm right now.
+Control URCap.** `ur_rtde` streaming control was never gotten working on this
+robot/URCap combination; paused, not abandoned — full troubleshooting history and
+untried next steps in `docs/debug_log.md`. Raw URScript-over-socket is what to use for
+anything on the real arm right now (`ur_rtde` itself is still used read-only, e.g.
+`rtde_receive.getActualTCPPose()`).
 
 ### Network setup (confirmed working)
 Second physical link, separate from the OptiTrack cable: UR12e control box to laptop
@@ -346,6 +350,13 @@ via USB-Ethernet adapter (`enxd0c0bf2dd1ed`), own subnet:
   acceleration). `catch.py --catch-move movej` (+ `--yaw-follow`) is the fix — a
   movej plans in joint space and cannot violate joint limits — validated on the
   real arm and on by default (see Catch Integration). See `docs/debug_log.md` 2026-07-17.
+- **Base-frame z below the wait pose risks hitting the mounting stand, not the
+  floor.** A real 2026-07-27 collision (tool scraped paint off the wrist3 housing
+  against the base's own mounting stand, `C157A1`) traced to a commit/return target at
+  z=-0.09m, 39cm below `DEFAULT_WAIT_POSE`'s z=0.139. `CATCH_Z_MIN` raised
+  `-0.25 → 0.119` (wait-pose z minus a 2cm buffer under a 5cm danger mark) as a flat
+  cutoff regardless of reach — `CATCH_MIN_REACH` (0.45m) wasn't implicated. See
+  `docs/debug_log.md` 2026-07-27.
 - **Home position is a singularity** — pendant jogging (and any move command) can
   throw a false "no IK solution" error there. Freedrive off home position first before
   assuming it's a real fault.
@@ -401,8 +412,8 @@ Motive resolves a unique orientation):**
   markers move relative to the base.
 - **Tool/wrist RB** (on the end-effector, offset to avoid occluding/being occluded by
   the ball): ground-truth TCP position in flight for closed-loop correction and for
-  verifying the tool actually reached the commanded catch point. Put it on the funnel
-  rim so you verify the mouth, not the flange.
+  verifying the tool actually reached the commanded catch point. Put it on the box's
+  rim/mouth so you verify the mouth, not the flange.
 
 **Timing budget is the whole game — measure, don't guess.** Race is `time_to_impact`
 (from the fit) vs `time_to_arrive` (arm move time). Dominant terms: the ~0.55s / ~67-
@@ -427,8 +438,14 @@ send opens a fresh connection AND preempts the still-running program. The
 program is sent once, over 30002, and the robot dials back to us. See
 `ur_servo.py`'s docstring and `docs/debug_log.md` 2026-07-20.)
 
-**End effector — net/funnel with a wide mouth** converts the few-cm error budget into
-forgiveness (10-15cm effective radius). Rigid cup / pinpoint gripper is v3 hero-mode.
+**End effector — small cardboard box** (settled; earlier net/funnel/rigid-cup plans
+superseded). A box mouth converts the few-cm error budget into forgiveness the same
+way a wide funnel would. Swapped smaller twice as the target ball shrank: 30x23x24cm →
+15.5x14.5x24cm (2026-07-20, tennis ball) → current smaller box (2026-07-27, ping pong
+ball). Each swap only changes `tcp_offset` (the box-centroid-along-flange-Z distance);
+the mocap↔base transform itself doesn't depend on which box is attached, so only a
+`tcp_offset` recalibration is needed, not a full resweep. The 2026-07-27 swap landed at
+essentially the same offset/RMSE as before (0.0725m, ~4.25mm) despite the smaller box.
 
 **Safety on the catch move:** a catch move is inherently larger than
 `ur_goto_raw.py`'s 0.15m/axis clamp — do NOT just spam `--force`. The catch code path
@@ -437,9 +454,10 @@ treat "clamp off" as one deliberate reviewed path, not a sprinkled flag.
 
 **Pieces to build:** `calibrate_frames.py` ✅ (Umeyama routine → saves `T_base←mocap`
 R/t to JSON) · `frames.py` ✅ (pure `mocap_point→base_point`, testable, no I/O) ·
-`catch.py` 🔨 BUILT, dry-run validated against a live Motive replay (conductor: NatNet →
-existing release detect + fit → trajectory ∩ catch-plane → `frames.transform` →
-feasibility gate → real `movel` over raw URScript-over-socket). Pre-positions at a wait
+`catch.py` ✅ BUILT and catching real thrown balls (81% best measured rate — see
+Status) (conductor: NatNet → existing release detect + fit → trajectory ∩ catch-plane →
+`frames.transform` → feasibility gate → real `movel`/`movej`/`servo` move over raw
+URScript-over-socket / the `ur_servo.py` streaming layer). Pre-positions at a wait
 pose (~0.6m reach, catch height ~1.1m floor) at startup, derives the horizontal catch
 plane through that height, and fires ONE max-speed `movel` per throw on the FIRST tick
 where the gate passes (feasible OR possibly-catch) — NOT once a stability check also
@@ -452,10 +470,11 @@ rules" `wait_for_fault_clear()`. **Robot position
 comes from RTDE FK only, never mocap** — it's
 validated against a looping Motive *replay* where the tool RB is frozen. Own
 conservative catch envelope (`check_catch_envelope`: reach 0.45–1.20m, base-z
-−0.25…+0.55m, azimuth ±75° of the wait pose, no cap on distance from wait pose) is
+0.119…+0.55m, azimuth ±75° of the wait pose, no cap on distance from wait pose) is
 the single reviewed "clamp-off"
 path — no `--force` spam. Reach floor raised 0.35→0.45m 2026-07-15 after a real
-protective stop (see "Run recording" below and `docs/debug_log.md`). Azimuth band
+protective stop; z floor raised -0.25→0.119 2026-07-27 after a real collision with the
+base's mounting stand (see Key safety rules above and `docs/debug_log.md`). Azimuth band
 added 2026-07-17 after a real self-collision: a hand grabbing the ball out of the
 box was detected as a throw and committed the arm to a target 158° behind the wait
 azimuth. Same incident class also spawned `check_release_guard()` (default on): a
@@ -467,8 +486,9 @@ move has settled (never preempting motion), the loop keeps refitting and sends
 a short envelope-checked correction move when the refined prediction drifts
 ≥2cm and the time budget allows (≤3 per throw, `reaim` events in the JSONL).
 Found effectively dormant on real data (2 firings in 98 attempts — travel time
-eats the settle window); `--reaim-preempt` (opt-in, unvalidated) interrupts the
-running move on ≥5cm drift instead (leads with `stopj()`). `--catch-move movej`
+eats the settle window); `--reaim-preempt` (opt-in, validated on the real arm
+2026-07-27) interrupts the running move on ≥5cm drift instead (leads with
+`stopj()`). `--catch-move movej`
 + `--yaw-follow` are the fix for the side-throw protective stops (see Key
 safety rules), on by default (`--catch-move movel` / `--no-yaw-follow` still
 available) — confirmed no catch-accuracy regression vs `movel`
@@ -493,7 +513,7 @@ wizard, not by `catch.py`** — user decision, "it never changes." Unlike
 `tcp_offset` (overwritten by `calibrate_frames.py`, so `catch.py` must resend
 it every run), nothing else in this toolchain touches payload, so there's no
 "prior script left the wrong value" hazard here. A wrong payload/CoG (factory
-default: symmetric point mass, mismatched with the real offset funnel) was the
+default: symmetric point mass, mismatched with the real offset box) was the
 traced root cause of a recurring `C153A0`/`C157A0` base-joint protective stop —
 see `docs/debug_log.md` 2026-07-16. If it recurs, check the pendant value
 before assuming this script's motion parameters are at fault.
@@ -522,6 +542,15 @@ where the tool ended up. See `docs/debug_log.md` 2026-07-15 for the
 tick-by-tick analysis that motivated the current commit rule (fire on the
 first qualifying tick, not a stability window).
 
+**Live plot (`catch.py --plot`, `throw_plot.py`, 2026-07-27)** — off by default; opens
+a persistent pop-up window (matplotlib/TkAgg) that updates once per throw with the
+ball's actual path, the arm's actual TCP path, and where each commit/re-aim/
+servo-retarget guess landed, time-colored within that throw. Driven synchronously
+from the main poll loop (interactive matplotlib isn't thread-safe); each update
+measured ~90-130ms, comfortably under `--catch-move servo`'s 0.3s setpoint-stream
+silence budget. **Not yet run through a real `--catch-move servo` throw on the live
+arm.** Details: `docs/debug_log.md` 2026-07-27.
+
 **Session wrap-up (`wrap_up_session()`, 2026-07-16, on by default — `--no-wrapup` to
 skip)**: once the NatNet/RTDE connections are fully torn down (deliberately outside
 the hot loop and its `try/finally` — nothing here may add latency to the live
@@ -535,37 +564,20 @@ plus any flight-report zip triggered during it. Lands in
 `log_history_slice.txt` + `polyscope_slice.txt` + any pulled flight report. Runs on
 every exit path, including Ctrl-C.
 
-**Recommended order (status as of 2026-07-20):**
-- (1) ✅ **frame registration + rigid bodies — DONE.** `calibrate_frames.py` +
-  `frames.py` work; current `T_base_from_mocap.json` (single-marker +
-  tool-offset joint solve) is **4.25mm fit RMSE**, live-verified to **1.5–9mm**
-  across the workspace (old rigid-body calibration kept as
-  `T_base_from_mocap_old.json`, 27.7mm). `track_rigid_body.py` closes the full
-  spatial pipeline (mocap → transform → live motion) and validates the
-  transform end to end — reported working well. Recalibration history:
-  `docs/debug_log.md` 2026-07-20.
-- (2) 🔄 **latency/feasibility characterization — IN PROGRESS.** Speed ceiling measured
-  (`speed_char.py`, see hardware section: 1:1 to ~1.2 m/s, ~1.3 peak, joint-limited).
-  Still needed: the `distance→move_time` curve (the feasibility oracle) and one full
-  perception→motion latency measurement.
-- (3) ~ static-target dry run — largely covered by `track_rigid_body.py`; a funnel-on-a-
-  held-ball run through the actual `catch.py` path is still worth doing once it exists.
-- (4) 🔨 v1 catch — `catch.py` BUILT (lofted throws, fixed plane, single `movel`, funnel,
-  pre-positioned wait pose). Needs a live-throw validation run; start with `--dry-run`.
-- (5) 🔨 v2 servoj streaming — **transport DONE and validated 2026-07-20**
-  (`ur_servo.py`, `track_ball_servo.py`; 0 late ticks, 3.1mm lag at 125Hz).
-  **Early commit implemented 2026-07-22**: `--catch-move servo` now starts
-  driving toward the predicted intercept at `--early-commit-samples` (default
-  5, vs `--commit-samples`' 40 for movel/movej) with the feasibility gate
-  bypassed for that first move — it fires on any valid plane crossing that
-  clears the envelope/release-guard, and the existing continuous-retarget
-  branch (`catch.py`, "attempted and servo_mode") pulls the noisy early guess
-  toward the true intercept every tick after. This is what dissolves the
-  commit-then-locked model and targets the throws the feasibility gate used to
-  refuse outright. **Not yet validated on the real arm** — this changes commit
-  timing materially (bypasses the feasibility gate for servo's first move), so
-  worth a `--dry-run` before a real session per the Key safety rules judgment
-  call above. Then tighter margins + smaller tools.
+**What's left (status as of 2026-07-27):** frame registration, v1 catch (`movel`/
+`movej`), and v2 servoj transport are all DONE and validated on the real arm — see
+Status below for numbers. Remaining:
+- 🔄 **Latency/feasibility characterization.** Speed ceiling measured (`speed_char.py`:
+  1:1 to ~1.2 m/s, ~1.3 peak, joint-limited). Still needed: the `distance→move_time`
+  curve (the feasibility oracle) and one full perception→motion latency measurement.
+- ✅ **v2 servoj refinements — validated 2026-07-27, no faults.** Early-commit
+  (`--catch-move servo` bypasses the feasibility gate for its first move, firing at
+  `--early-commit-samples` instead of `--commit-samples`, then continuously retargets —
+  see `ur_servo.py`/`docs/debug_log.md` 2026-07-22 for how it works), `--reaim-preempt`,
+  `--tilt-follow`, and servo orientation rate limiting all passed a real session
+  cleanly. `--catch-move servo --tilt-follow 20` promoted to default after this
+  validation (see Status); `--reaim-preempt` remains opt-in. Next: tighter margins +
+  smaller tools now that the ping pong ball / box combo is settled.
 
 **Reference prior art / methods:**
 - EPFL/LASA "Catching Objects in Flight" (Kim & Billard) — canonical mocap + fast arm +
@@ -586,94 +598,69 @@ every exit path, including Ctrl-C.
 ## Open Questions / To Revisit
 - How many Flex 13 units are available, and can they cover both the throw's mid-flight
   trajectory and the arm's catch zone?
-- What end effector catches the ball (rigid cup/funnel vs. soft net vs. passive
-  compliant catch) — precision vs. forgiveness tradeoff given ~1.2 m/s TCP speed limit.
 - RTDE control loop rate and achievable end-to-end latency (perception → prediction →
   robot command → robot motion) — not yet measured end-to-end with real
   perception+prediction in the loop.
-- Whether markers go on the ball itself (retroreflective sphere on/in a tennis ball) or
-  tracking is passive/markerless — markered is far easier and more reliable to start.
 - Safety: throwing objects at a moving cobot arm needs a real risk assessment even
   though UR e-series has built-in safety functions; likely need a cage/soft barrier or
-  restricted demo zone regardless of "collaborative" rating.
+  restricted demo zone regardless of "collaborative" rating — underscored by the real
+  2026-07-27 mounting-stand collision (see Key safety rules).
 - Torque limits on sudden/hard trajectories: a fixed A↔B loop test doesn't exercise
   the direction-change-heavy motion a real catch trajectory will need — revisit once
   real trajectory prediction is driving the arm.
-- `ur_rtde`/External Control URCap root cause still open (deprioritized, not urgent —
-  raw URScript-over-socket is a working fallback for now). See `docs/debug_log.md`.
-- **`--reaim-preempt` and `--tilt-follow` need real-arm validation** (both
-  opt-in): preempt replaces a running move (validate at low speed, watch for protective
-  stops at the preemption instant); tilt-follow needs an IK-reachability check near the
-  envelope edge. Motivations + data: `docs/debug_log.md` 2026-07-18 §2/§4/§8.
-- **`ur_servo.py --self-test` FIXED (2026-07-21)** — root cause was the final-approach
-  deadband in `RateLimiter.step()` (not the accel-search/geometric-term interaction
-  originally suspected): it snapped straight to the target and zeroed `prev_v_*`
-  unconditionally, with no check that doing so was itself accel-consistent. That let
-  a still-jittering (not-yet-converged) predicted target re-trigger the snap almost
-  every tick, and separately let a real, still-substantial velocity get discarded to
-  a fictitious 0 baseline, both producing real discontinuities in the commanded
-  stream (measured 25-108 m/s² against 2-4 m/s² caps). Fix: gate the snap on the
-  acceleration it would itself imply (same polar decomposition the main accel search
-  uses) and, when taken, carry the velocity actually used forward as `prev_v_*`
-  instead of zeroing it. Self-test passes; 30-seed×150-throw sweep plateaus at the
-  pre-existing documented ~2.15x residual, not a new spike. Traded off: braking
-  overshoot at 1.2 m/s rose from 2.4mm to 4.8mm (deadband no longer snaps
-  unconditionally) — no longer comfortably inside the 4.25mm calibration RMSE, worth
-  watching if catch accuracy regresses. `--catch-move servo` is still otherwise
-  unvalidated on the real arm; real-arm protective stops remain a backstop.
-- **Servo orientation rate limiting — IMPLEMENTED 2026-07-22, not yet validated
-  on the real arm.** Root cause (see the prior entry, kept for the diagnosis):
-  `ur_servo.RateLimiter.step()` bounded `cmd_xyz` only; `servo_orient` (yaw-
-  follow/tilt-follow) was sent raw every tick, snapping the full commit-instant
-  yaw delta straight onto the **base joint** in one tick — `yaw_follow_orientation()`
-  rotates about base Z by design (keeps the wrist still), so IK had to reconcile
-  "position still near the wait pose" with "orientation already at the final
-  azimuth" in ~8ms. Suspected root cause of both the "oscillating to come to a
-  stop" behavior and the base-joint accel-limit faults seen in real 2026-07-21/22
-  sessions, regardless of `--servo-max-speed`/`--servo-max-accel` (neither
-  touched this channel). Fix: `ur_servo.OrientationRateLimiter` (new class,
-  alongside `RateLimiter`) slew-limits the rotation vector the same way —
-  speed-capped, accel-capped, braking smoothly toward a held target via the
-  same `sqrt(2*a*margin)` form `RateLimiter._brake_cap` uses — wired into
-  `catch.py`'s `emit_setpoint()` alongside the position limiter, defaulting to
-  the same rate budget as `--servo-base-rate-deg-s` (`--servo-orient-max-rate-deg-s`
-  to override). Unlike `RateLimiter`, target-overshoot is *not* treated as a
-  hard bound (mirroring `RateLimiter._axis_cap`'s own stated philosophy — smooth
-  acceleration is the real safety property, not landing exactly on target), so
-  the implementation is a single 1D blend, no cylindrical-coordinate machinery
-  needed. Self-tested (`ur_servo.py --self-test`, parts 7–8): the commit-instant
-  snap is exact from the first tick (matches the actual bug); a bounded,
-  understood tail-convergence residual remains when a HELD-STILL target finishes
-  converging (up to ~4.7x the accel cap for one tick, vs `RateLimiter`'s own
-  documented, accepted 2.15x residual for the same class of discrete-time
-  `sqrt(2*a*margin)`-braking artifact — worse here only because this class
-  defaults to a punchier 0.15s rate-to-accel ramp, matching `RateLimiter`'s own
-  `max_base_accel` convention, not its gentler ~0.3s one). Not yet validated on
-  the real arm — offline replay of the 2026-07-22 fault sessions through the new
-  limiter (see that day's conversation) showed a ~2.3x larger commit-instant
-  orientation jump on faulted throws vs non-faulted ones and the new limiter
-  cutting worst-case commanded accel by 50-500x, but that's circumstantial, not
-  a live confirmation.
+- A ping pong ball is far more drag-affected than the tennis ball `trajectory.py`'s
+  fitting was tuned against (much lower mass-to-drag ratio) — the constant-
+  acceleration quadratic fit may need a drag term, or may hold up fine over the short
+  flight times in play. Not yet checked against real ping-pong-ball throw data.
 
-## Status (2026-07-20)
-Real motion works (raw URScript-over-socket). Trajectory fitting/prediction
-works against recorded and live OptiTrack data. Spatial pipeline connected end
-to end: frame registration done (4.25mm fit RMSE — see Catch Integration step
-1), `track_rigid_body.py` continuously drives the arm to park under a tracked
-rigid body via `frames.py` — proven and reported working well. v2 servoj
-streaming transport also built and validated (`ur_servo.py`/
-`track_ball_servo.py`, see step 5).
+## Status (2026-07-27)
+Real motion works: raw URScript-over-socket and v2 servoj streaming are both
+validated on the real arm. Trajectory fitting/prediction works against recorded and
+live OptiTrack data. Spatial pipeline connected end to end: frame registration done
+(4.25mm fit RMSE), `track_rigid_body.py` proven working. All catch-move paths —
+`movel`, `movej` (+`--yaw-follow`), and `servo` (early-commit, `--tilt-follow`,
+orientation rate limiting) — passed a real-arm session with no faults as of
+2026-07-27; `--reaim-preempt` also validated that session and remains opt-in.
 
-**`catch.py` is catching real thrown balls.** Best measured rate: **81%**
-(75/93 committed throws, 2026-07-18 forensic pass over a 160-throw day). Most
-misses are rim hits (median prediction error ~13cm), not wild misses, so a
-wider/energy-absorbing mouth is currently the single biggest catch-rate lever.
-Current default operating point: `--catch-move movej --yaw-follow` (fixes
-side-throw protective stops — see Key safety rules), `--accel 4.0 --speed 1.2
---approach-speed 1.5`, `--poll-hz 50`, `--rigid-body-id 3`, wait pose
-`(0.042, -0.716, 0.139, 1.584, -0.0824, -0.0573)`.
+**`--catch-move servo` promoted to the default** (2026-07-27, after the above
+validation run) — see the "chase-abort" entry below for the safety addition that
+went with it. `movej --yaw-follow` remains available and is still the joint-space
+fallback if servo mode needs to be ruled out.
 
-Full session-by-session history (release guard, re-aim, movej/yaw-follow
-rollout, the calibration root-cause chase, box swap, v2 streaming validation)
-is in `docs/debug_log.md`, dated 2026-07-16 through 2026-07-20 — consult it
-for the "why" behind any of the current defaults above.
+**Ball/effector: ping pong ball + small cardboard box** (settled and recalibrated
+2026-07-27 — `tcp_offset`/RMSE came out essentially unchanged from the prior, larger
+box: ~0.0725m / ~4.25mm). **Catch rate not yet re-measured for this combo.** Best
+measured rate on the *prior* tennis-ball/larger-box setup: **81%** (75/93 committed
+throws, 2026-07-18 forensic pass over a 160-throw day) — most misses were rim hits
+(median prediction error ~13cm), not wild misses.
+
+**Chase-abort (2026-07-27, on by default, no flag).** A later same-day session hit
+two real faults chasing throws that never should have been chased: a payload/CoG-
+related `C153A0` on a genuine catch (pre-existing known cause, unrelated to chasing),
+and a `C306A3` ("acceleration failed to pass sanity check") → Go-to-Fault → hard
+power/brake cutoff while continuously retargeting a throw ~70-90cm outside the
+reachable zone for the whole flight - the reach/z/azimuth envelope clamp alone didn't
+stop it, since the retarget's *position* stayed nominally in-bounds even as its
+*margin* (time budget) only got worse. Fix: `catch.py` now tracks the feasibility
+margin trend after commit and abandons the chase (holds the last setpoint, stops
+retargeting/re-aiming) once margin has stayed negative and non-improving for
+`ABORT_NON_IMPROVING_TICKS` (8) consecutive ticks - strictly more conservative than
+before, so on by default with no opt-out flag. Separately, a bug where a failed
+post-fault servo-stream reconnect raised an uncaught `SystemExit` and skipped
+`wrap_up_session()` (silently losing the SSH log pull for the fault that mattered
+most) was also fixed that day - see `docs/debug_log.md`.
+
+Current default operating point: `--catch-move servo --tilt-follow 20`
+(`--servo-max-speed 0.8 --servo-max-accel 4.0`, yaw-follow always on), recording and
+the live throw-plot (`--plot`) on by default, `--base-rb-transform
+T_base_from_baseRB_v2.json` (live per-tick transform) on by default over the static
+`--transform-file T_base_from_mocap_v2.json`, `--poll-hz` following `--servo-rate`
+(125), `--rigid-body-id 3`, wait pose `(0.042, -0.716, 0.139, 1.584, -0.0824,
+-0.0573)`. Plain `python3 catch.py` now reproduces the full daily command; pass
+`--no-record`/`--no-plot`/`--catch-move movej` etc. to override any single piece.
+
+A real 2026-07-27 collision (tool vs. the base's mounting stand) tightened the catch
+envelope's z floor (`CATCH_Z_MIN` -0.25→0.119) — see Key safety rules.
+
+Full session-by-session history is in `docs/debug_log.md`, dated 2026-07-16 through
+2026-07-27 — consult it for the "why" behind any of the current defaults above.
