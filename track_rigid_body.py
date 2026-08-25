@@ -266,7 +266,7 @@ prog()
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--transform", default="T_base_from_mocap.json",
+    parser.add_argument("--transform", default="UR10_T_base_from_mocap.json",
                          help="Calibration file written by calibrate_frames.py")
     parser.add_argument("--target-rigid-body-id", type=int, default=None,
                          help="Force which rigid body to track (auto-detected if only one "

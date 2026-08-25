@@ -126,8 +126,21 @@ CATCH_MAX_REACH = 1.20   # m from base - was 1.00; user directive 2026-07-15: at
 # this trades away catching low throws far from the base (which were never actually
 # near the stand) for a much simpler, physically-grounded rule. CATCH_MIN_REACH left
 # at 0.45m per the same reasoning: it isn't what caused this incident.
-CATCH_Z_MIN = 0.119      # m base-frame - below this the tool can reach the mounting stand (see above)
-CATCH_Z_MAX = 0.55       # m base-frame - above this heads toward the overhead shoulder singularity (slow, imprecise)
+#
+# --- 2026-08-24 UR10 (CB3) migration: overwritten in place for the new arm/location,
+# per user directive (git-recoverable, not branched - see docs/ur10_migration_roadmap.md).
+# CATCH_MIN_REACH/CATCH_MAX_REACH left at the UR12e's values (same 1300mm reach spec,
+# user directive to reuse). CATCH_Z_MIN set to 0.05m ("5cm off the arm's base") - a
+# placeholder, not survey-derived like the UR12e's 0.119m was; the UR12e's floor only
+# exists because of a real collision with THAT stand's specific geometry, so this
+# number needs the same kind of physical-clearance check once the new mount/stand is
+# actually looked at, not just assumed safe by analogy. CATCH_Z_MAX set equal to
+# CATCH_MAX_REACH so it never binds ("no z max needed") - 3D reach (sqrt(x^2+y^2+z^2)
+# <= CATCH_MAX_REACH) already bounds |z| on its own, so this is a no-op cap rather than
+# a removed check.
+CATCH_Z_MIN = 0.15       # m base-frame - raised from 0.05 placeholder after physical check at the
+                          # arm on 2026-08-24 (user observed clearance at 0.05, moved floor up for margin)
+CATCH_Z_MAX = CATCH_MAX_REACH  # m base-frame - effectively uncapped, see 2026-08-24 note above
 # MAX_CATCH_MOVE (was 0.60m, capped distance from the wait pose) removed 2026-07-15 per
 # user directive - only the reach/z band above now bounds a catch target, so any target
 # within CATCH_MAX_REACH is attempted regardless of distance from the wait pose.
@@ -180,7 +193,13 @@ ABORT_MARGIN_EPS = 0.005        # s - a margin improvement smaller than this sti
 # (0 deg and 180 deg) - confirmed via ur_get_pose.py joint readout before saving.
 # Re-taught again 2026-07-17 night shift (same orientation, adjusted x/y) as the new
 # operating-point pose used alongside --catch-move movej/--yaw-follow.
-DEFAULT_WAIT_POSE = (0.042, -0.716, 0.139, 1.584, -0.0824, -0.0573)
+#
+# 2026-08-24 UR10 (CB3) migration: overwritten in place with this arm's current pose
+# at the new location (captured via ur_get_pose.py, user directive - just wherever the
+# arm happened to be, not a deliberately-taught singularity-avoiding pose like the
+# UR12e one above was). Not yet checked for proximity to a wrist/shoulder singularity -
+# do that before relying on it for real catch moves.
+DEFAULT_WAIT_POSE = (0.1583, -0.5783, 0.2267, 1.1951, -1.1218, 1.1215)
 
 # --record output goes here, not cwd - keeps the repo root from filling up with one
 # file per session the way speed_char_*.json/png already do.
@@ -435,6 +454,12 @@ def check_release_guard(flight_buffer: List, R: np.ndarray, t_vec: np.ndarray,
 # Real committed throws all fell within 44deg of the wait azimuth. The release guard
 # (check_release_guard) should catch the false-release upstream; this is the
 # belt-and-suspenders backstop at the single reviewed motion gate.
+#
+# 2026-08-24 UR10 migration: reused unchanged, per user directive. Same caveat as
+# CATCH_Z_MIN above - this number isn't a joint/geometry constant, it's "how far
+# around the OLD stand could the arm swing before hitting something" for that specific
+# mount. Carrying it over is only actually safe once someone's eyeballed there's
+# nothing equivalently close within 75deg of the new wait pose's azimuth.
 CATCH_MAX_AZIMUTH_DEG = 75.0
 
 
@@ -667,16 +692,35 @@ def move_to(pose: List[float], speed: float, accel: float, rtde_r, dash, last_no
     straight line assumes - a real 2026-07-16 protective stop traced to exactly that.
     Returns (settled, fault): fault is a description string (and settled forced False)
     if a non-NORMAL safety mode is observed at any point in the wait - see
-    check_safety_mode()."""
+    check_safety_mode().
+
+    CB3 UR10 bring-up 2026-08-24: this settle check must not start counting
+    "stopped" ticks until real motion (TCP speed > MOVE_START_SPEED) has been
+    observed - on a controller with a slower script-parse/motion-start delay
+    than the e-Series box this was validated against (~0.6-0.8s measured on
+    CB3), the old unguarded version could read near-zero speed for the first
+    few ticks *before the move had even begun* and declare settled instantly,
+    reporting arrival at a pose the arm hadn't moved toward yet. See
+    ur_goto_raw.wait_for_stop's docstring for the full story - same bug, same
+    fix, independently duplicated here because move_to() has its own
+    check_safety_mode() polling woven into the loop."""
     qnear = list(rtde_r.getActualQ())
+    current_pose = rtde_r.getActualTCPPose()
+    if max(abs(t - c) for t, c in zip(pose[:3], current_pose[:3])) < 0.001:
+        return True, None
     send_script(movej_to_pose_script(pose, qnear, speed, accel))
     slow_streak = 0
+    started = False
     start = time.time()
     while time.time() - start < settle_timeout:
         fault = check_safety_mode(rtde_r, dash, last_normal)
         if fault is not None:
             return False, fault
-        if max(abs(v) for v in rtde_r.getActualTCPSpeed()) < 0.002:
+        peak = max(abs(v) for v in rtde_r.getActualTCPSpeed())
+        if not started:
+            if peak > 0.005:
+                started = True
+        elif peak < 0.002:
             slow_streak += 1
             if slow_streak >= 5:
                 return True, None
@@ -958,12 +1002,13 @@ def main():
                              "pose height (recommended - keeps the plane through the wait pose).")
 
     # Transform / model -----------------------------------------------------------
-    parser.add_argument("--transform-file", default="T_base_from_mocap_v2.json",
-                        help="T_base<-mocap from calibrate_frames.py (default T_base_from_mocap_v2.json, "
-                             "the current rig calibration since 2026-07-24 - see docs/debug_log.md)")
-    parser.add_argument("--base-rb-transform", default="T_base_from_baseRB_v2.json",
-                        help="Path to calibrate_base_rb.py's output (default T_base_from_baseRB_v2.json, "
-                             "on since 2026-07-27 - pass an empty string to fall back to the static "
+    parser.add_argument("--transform-file", default="UR10_T_base_from_mocap.json",
+                        help="T_base<-mocap from calibrate_frames.py (default UR10_T_base_from_mocap.json, "
+                             "the UR10 migration rig calibration since 2026-08-24 - the old UR12e rig's "
+                             "T_base_from_mocap_v2.json is still there, pass it explicitly to go back)")
+    parser.add_argument("--base-rb-transform", default="UR10_T_base_from_baseRB.json",
+                        help="Path to calibrate_base_rb.py's output (default UR10_T_base_from_baseRB.json, "
+                             "on since 2026-08-24 - pass an empty string to fall back to the static "
                              "--transform-file instead). When set, base<-mocap is recomputed every "
                              "tick from a second tracked rigid body mounted on the robot's fixed base "
                              "(frames.base_from_mocap_via_rigid_body) instead of loaded once from "

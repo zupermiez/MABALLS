@@ -42,6 +42,8 @@ DEFAULT_ACCEL = 3.0       # rad/s^2 - unverified for joint space (see module doc
                            # in v1 history), controller assumed to clamp internally
 SETTLE_SPEED = 0.01       # rad/s - below this on J1 counts as "arrived"
 SETTLE_TICKS = 3          # consecutive slow polls required before declaring arrival
+MOVE_START_SPEED = 0.02   # rad/s - clearly above sensor noise; below this, motion
+                           # hasn't genuinely begun yet (see wait_for_arrival)
 POLL_INTERVAL = 0.05      # s
 ARRIVAL_TIMEOUT = 5.0     # s - safety backstop per leg
 
@@ -65,8 +67,15 @@ prog()
 
 def wait_for_arrival(rtde_r, label: str, speed: float, accel: float):
     """Poll until J1 settles near-zero speed, or a fault/timeout is hit.
-    Returns (arrived: bool, fault: Optional[str])."""
+    Returns (arrived: bool, fault: Optional[str]).
+
+    Doesn't start counting the settle streak until real motion has actually
+    been observed (speed > MOVE_START_SPEED) - see ur_goto_raw.wait_for_stop's
+    docstring (CB3 UR10 bring-up 2026-08-24) for why an unguarded version can
+    false-positive "arrived" before a slower-to-start controller has begun
+    moving at all."""
     slow_streak = 0
+    started = False
     start = time.time()
     while time.time() - start < ARRIVAL_TIMEOUT:
         fault = check_fault(rtde_r)
@@ -76,7 +85,10 @@ def wait_for_arrival(rtde_r, label: str, speed: float, accel: float):
         qd1 = rtde_r.getActualQd()[0]
         print(f"\r{label}: J1={math.degrees(q1):+7.2f} deg   speed={math.degrees(qd1):+7.1f} deg/s   ",
               end="", flush=True)
-        if abs(qd1) < SETTLE_SPEED:
+        if not started:
+            if abs(qd1) > MOVE_START_SPEED:
+                started = True
+        elif abs(qd1) < SETTLE_SPEED:
             slow_streak += 1
             if slow_streak >= SETTLE_TICKS:
                 return True, None

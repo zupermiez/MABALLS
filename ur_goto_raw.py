@@ -11,6 +11,9 @@ DEFAULT_ACCEL = 0.3      # m/s^2 (movel) or rad/s^2 (movej)
 MAX_WAIT = 15.0          # seconds - safety timeout for the completion poll below
 SETTLE_SPEED = 0.001     # m/s (or rad/s) - below this counts as "stopped"
 SETTLE_TICKS = 5         # consecutive slow samples required before declaring "done"
+MOVE_START_SPEED = 0.005  # m/s (or rad/s) - clearly above sensor noise; below this,
+                           # motion hasn't genuinely begun yet (see wait_for_stop)
+NOOP_TOL = 0.001          # m (or rad) - target already reached, no need to wait for motion
 
 # Defense-in-depth after a real incident 2026-07-10: a code bug (bare list
 # instead of a p[] pose literal) sent the robot toward a wildly wrong target
@@ -111,13 +114,36 @@ def check_move_size(current, target, is_joint, force):
         )
 
 
-def wait_for_stop(rtde_r, is_joint):
+def wait_for_stop(rtde_r, is_joint, current=None, target=None):
+    """Poll until the arm settles at near-zero speed, or MAX_WAIT elapses.
+
+    CB3 UR10 bring-up 2026-08-24: found that on this (slower-to-start) CB3
+    controller, the settle check could declare "done" up to ~0.6-0.8s before
+    the robot had even begun moving - motion hadn't started yet, so speed read
+    near-zero and satisfied the "stopped" streak instantly, reporting "settled
+    cleanly" for a move that (as of that instant) hadn't happened yet. This
+    wasn't visible on the faster-to-start e-Series box this pattern was
+    originally written against. Fix: don't start counting the settle streak
+    until real motion (speed > MOVE_START_SPEED) has actually been observed -
+    unless the target was already reached (no motion needed), checked via
+    `current`/`target` up front so a genuine no-op move doesn't just time out.
+    """
+    if current is not None and target is not None:
+        deltas = [t - c for t, c in zip(target, current)]
+        if not is_joint:
+            deltas = deltas[:3]
+        if max(abs(d) for d in deltas) < NOOP_TOL:
+            return True
     getter = rtde_r.getActualQd if is_joint else rtde_r.getActualTCPSpeed
     slow_streak = 0
+    started = False
     start = time.time()
     while time.time() - start < MAX_WAIT:
-        speed = getter()
-        if max(abs(v) for v in speed) < SETTLE_SPEED:
+        peak = max(abs(v) for v in getter())
+        if not started:
+            if peak > MOVE_START_SPEED:
+                started = True
+        elif peak < SETTLE_SPEED:
             slow_streak += 1
             if slow_streak >= SETTLE_TICKS:
                 return True
@@ -173,7 +199,7 @@ def main():
     send_script(script)
 
     print("waiting for motion to complete (or timeout)...", flush=True)
-    reached_stop = wait_for_stop(rtde_r, is_joint)
+    reached_stop = wait_for_stop(rtde_r, is_joint, current=current, target=target)
 
     if is_joint:
         print("after joints:", [round(v, 4) for v in rtde_r.getActualQ()])

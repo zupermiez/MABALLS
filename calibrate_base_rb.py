@@ -5,7 +5,7 @@ calibrate_frames.py sweep - see CLAUDE.md "remember calibration relative to
 a base-mounted rigid body" for the rationale.
 
 Does NOT move the robot and does NOT re-solve base<-mocap - it assumes the
-transform already in --transform-in (default T_base_from_mocap.json) is
+transform already in --transform-in (default UR10_T_base_from_mocap.json) is
 currently valid (i.e. the rig hasn't moved since that file was written), and
 composes it with a single stationary reading of the base rigid body's live
 pose to get base<-RB (frames.compose_base_from_rigid_body): the fixed offset
@@ -100,10 +100,10 @@ def main():
     parser.add_argument("--rigid-body-id", type=int, required=True,
                          help="NatNet id of the base-mounted rigid body (no auto-detect - other "
                               "rigid bodies, e.g. the tool RB or ball, may also be visible)")
-    parser.add_argument("--transform-in", default="T_base_from_mocap.json",
+    parser.add_argument("--transform-in", default="UR10_T_base_from_mocap.json",
                          help="Existing base<-mocap calibration, assumed still valid right now "
-                              "(default T_base_from_mocap.json)")
-    parser.add_argument("--out", default="T_base_from_baseRB.json", help="Output JSON path")
+                              "(default UR10_T_base_from_mocap.json)")
+    parser.add_argument("--out", default="UR10_T_base_from_baseRB.json", help="Output JSON path")
     parser.add_argument("--duration", type=float, default=DEFAULT_DURATION,
                          help=f"Seconds to average the base RB's pose over (default {DEFAULT_DURATION})")
     parser.add_argument("--std-limit", type=float, default=STD_LIMIT,

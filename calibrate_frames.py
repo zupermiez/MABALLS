@@ -797,7 +797,7 @@ def main():
     parser.add_argument("--skip-set-tcp", action="store_true",
                          help="Don't send set_tcp() - use if the box-centroid TCP is already "
                               "active (e.g. configured on the pendant instead)")
-    parser.add_argument("--out", default="T_base_from_mocap.json", help="Output JSON path")
+    parser.add_argument("--out", default="UR10_T_base_from_mocap.json", help="Output JSON path")
     parser.add_argument("--resume", default=None,
                          help="Continue from a previous run's output JSON (e.g. --out's default "
                               "path) instead of starting over - same rigid body and TCP offset "

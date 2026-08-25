@@ -394,8 +394,8 @@ def main():
     parser.add_argument("--catch-axis", choices=AXIS_NAMES, required=True, help="Axis of the catch plane (mocap frame)")
     parser.add_argument("--catch-value", type=float, required=True, help="Value of the catch plane on --catch-axis (mocap frame)")
 
-    parser.add_argument("--transform-file", default="T_base_from_mocap.json",
-                         help="T_base<-mocap from calibrate_frames.py (default: T_base_from_mocap.json)")
+    parser.add_argument("--transform-file", default="UR10_T_base_from_mocap.json",
+                         help="T_base<-mocap from calibrate_frames.py (default: UR10_T_base_from_mocap.json)")
     parser.add_argument("--speed-char-json", default=None,
                          help="speed_char.py output JSON to fit the move-time model from "
                               "(default: newest speed_char_*.json in the current directory)")

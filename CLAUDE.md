@@ -55,6 +55,37 @@ Working pipeline sketch:
 This is not yet a settled architecture — treat the above as a first-pass idea to be
 revised as we prototype.
 
+## Active work: UR10 (CB3) migration — 2026-08-24
+
+Porting the catch pipeline to a different physical robot — a classic CB3 UR10 (not
+the UR12e/UR10e described below), at a new location. Full live status, phased
+checklist, and issues found so far: `docs/ur10_migration_roadmap.md` — not
+auto-loaded, consult it deliberately for the current step. Everything below this
+point (IPs, wait pose, envelope constants, catch rate) still describes the UR12e
+rig, not yet updated for the new arm.
+
+**What works right now:** arm network-reachable at `192.168.20.1` (Dashboard/RTDE/
+secondary-client ports all open — same subnet number as the UR12e used, but over
+the laptop's built-in port, no separate USB adapter today). Raw URScript-over-
+socket driving confirmed working (`jog_ur_raw.py`, `ur_goto_raw.py`). Joint speed
+limits confirmed identical to the UR12e (120°/180°, verified against the official
+UR10/CB3 manual) — movej speed/accel defaults carry over unchanged. Found and fixed
+a real CB3-specific bug: the shared "settled" completion check (`ur_goto_raw.py`'s
+`wait_for_stop`, `catch.py`'s `move_to()`, `spin_base.py`, and both calibration-
+sweep scripts) could false-positive "arrived" before the robot had even started
+moving, because CB3's script-parse/motion-start latency (~0.6–0.8s measured) is
+longer than the check's ~250ms window — fixed everywhere it appeared, verified
+against the real arm.
+
+**Still blocking `catch.py` for real:** two hardcoded constants need this arm's
+real values — `DEFAULT_WAIT_POSE`, and the `CATCH_MIN_REACH`/`MAX_REACH`/`Z_MIN`/
+`Z_MAX`/`MAX_AZIMUTH_DEG` envelope. Everything else (`--robot-ip`,
+`--transform-file`, `--rigid-body-id`) is already a CLI flag, not code. Bigger
+blocker: OptiTrack isn't set up at the new location yet — no cameras/calibration
+volume, no base/tool rigid bodies, no frame registration (`calibrate_frames.py`).
+Nothing perception-driven in `catch.py` can run, not even `--dry-run`, until that's
+in place.
+
 ## Hardware Reference
 
 ### Universal Robots UR12e (arm)

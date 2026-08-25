@@ -123,7 +123,7 @@ import rtde_receive
 from calibrate_frames import apply_and_verify_tcp
 from catch import DEFAULT_WAIT_POSE
 from ur_goto_raw import (movej_to_pose_script, send_script, ROBOT_IP,
-                          MAX_WAIT, SETTLE_SPEED, SETTLE_TICKS)
+                          MAX_WAIT, SETTLE_SPEED, SETTLE_TICKS, MOVE_START_SPEED)
 
 DEFAULT_SPEED = 0.5   # rad/s - supervised replay, not a race; tune with --speed
 DEFAULT_ACCEL = 1.0   # rad/s^2
@@ -206,9 +206,16 @@ def wait_for_stop_or_soft_stop(rtde_r):
     program - same mechanism catch.py's re-aim preemption uses) and
     decelerates it to a clean stop, no protective stop / E-stop needed for a
     self-collision that's visibly about to happen. Returns (settled,
-    soft_stopped)."""
+    soft_stopped).
+
+    Doesn't start counting the settle streak until real motion has actually
+    been observed (speed > MOVE_START_SPEED) - see ur_goto_raw.wait_for_stop's
+    docstring (CB3 UR10 bring-up 2026-08-24) for why an unguarded version can
+    false-positive "settled" before a slower-to-start controller has begun
+    moving at all."""
     fd = sys.stdin.fileno()
     slow_streak = 0
+    started = False
     soft_stopped = False
     start = time.time()
     with cbreak_mode(fd):
@@ -218,8 +225,11 @@ def wait_for_stop_or_soft_stop(rtde_r):
                     print("\n  SOFT STOP - sending stopj()...")
                     send_script(stopj_script(STOP_DECEL))
                     soft_stopped = True
-            speed = rtde_r.getActualQd()
-            if max(abs(v) for v in speed) < SETTLE_SPEED:
+            peak = max(abs(v) for v in rtde_r.getActualQd())
+            if not started:
+                if peak > MOVE_START_SPEED:
+                    started = True
+            elif peak < SETTLE_SPEED:
                 slow_streak += 1
                 if slow_streak >= SETTLE_TICKS:
                     return True, soft_stopped
@@ -373,8 +383,8 @@ def move_with_retry(rtde_r, dash, target_pose, speed, accel, label, qnear=None,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--transform-in", default="T_base_from_mocap.json",
-                         help="calibration output JSON to replay poses from (default T_base_from_mocap.json)")
+    parser.add_argument("--transform-in", default="UR10_T_base_from_mocap.json",
+                         help="calibration output JSON to replay poses from (default UR10_T_base_from_mocap.json)")
     parser.add_argument("--speed", type=float, default=DEFAULT_SPEED,
                          help=f"movej joint speed, rad/s (default {DEFAULT_SPEED})")
     parser.add_argument("--accel", type=float, default=DEFAULT_ACCEL,

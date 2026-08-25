@@ -65,7 +65,7 @@ def main():
     parser.add_argument("--server-ip", default="192.168.10.1", help="Motive host IP")
     parser.add_argument("--local-ip", default="192.168.10.2", help="This machine's IP")
     parser.add_argument("--unicast", action="store_true", help="Use unicast instead of multicast")
-    parser.add_argument("--base-rb-transform", default="T_base_from_baseRB.json",
+    parser.add_argument("--base-rb-transform", default="UR10_T_base_from_baseRB.json",
                          help="Output of calibrate_base_rb.py")
     parser.add_argument("--tcp-rigid-body-id", type=int, default=None,
                          help="Track this rigid body id as ground truth instead of the marker mode "
@@ -86,7 +86,7 @@ def main():
                               "in the base-RB composition code, which doesn't vary with arm pose either "
                               "way. This flag isolates that: same marker setup, base RB fully out of "
                               "the picture - if the same pattern shows up, it's the marker, not the code.")
-    parser.add_argument("--transform-in", default="T_base_from_mocap.json",
+    parser.add_argument("--transform-in", default="UR10_T_base_from_mocap.json",
                          help="With --use-static-transform: the base<-mocap file to use directly")
     parser.add_argument("--skip-set-tcp", action="store_true",
                          help="Don't send set_tcp() - use if the calibration's box-centroid TCP is "

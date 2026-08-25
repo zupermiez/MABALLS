@@ -213,7 +213,7 @@ class Recorder:
 def build_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--transform", default="T_base_from_mocap.json",
+    p.add_argument("--transform", default="UR10_T_base_from_mocap.json",
                    help="Calibration file written by calibrate_frames.py")
     p.add_argument("--rigid-body-id", type=int, default=DEFAULT_BALL_RB_ID,
                    help=f"Ball rigid-body id (default {DEFAULT_BALL_RB_ID})")
