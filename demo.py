@@ -82,7 +82,8 @@ from natnet import NatNetClient, DataFrame
 from live_trajectory import STATE_LOCK, SharedState, add_release_detection_args, make_handler
 from trajectory import AXIS_NAMES
 from frames import mocap_point_to_base, quat_to_matrix, base_from_mocap_via_rigid_body
-from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script, movej_to_pose_script
+from ur_goto_raw import (ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script,
+                          movej_to_pose_script, movej_script, wait_for_stop)
 from calibrate_frames import send_urscript, set_tcp_script
 from verify_base_rb import BaseRBState, make_base_rb_handler, BASE_RB_LOCK
 from calibrate_base_rb import CaptureState, make_handler as make_base_rb_capture_handler, average_pose
@@ -764,6 +765,103 @@ def move_to(pose: List[float], speed: float, accel: float, rtde_r, dash, last_no
             slow_streak = 0
         time.sleep(0.05)
     return False, None
+
+
+# demo.py-only (2026-08-25): post-catch "dump the ball out" trick. Base joint
+# rotates DEMO_DUMP_BASE_DEG ("right"); sign is a guess (negative = clockwise
+# viewed from above, base-frame Z-up right-hand rule) - not yet verified on the
+# real arm. If the first live run swings the wrong way, just flip this sign.
+DEMO_DUMP_BASE_DEG = -90.0
+DEMO_DUMP_WRIST_DEG = 180.0   # wrist3 (last joint) - spins the tool to tip the box out
+DEMO_DUMP_SPEED = 1.5         # rad/s, joint-space
+DEMO_DUMP_ACCEL = 1.0         # rad/s^2
+DEMO_DUMP_ARRIVAL_TOL_M = 0.03  # how close to the wait pose (xyz only) before the dump fires
+
+
+def dump_ball_sequence(rtde_r, dash, last_normal: "LastNormal") -> bool:
+    """Blocking joint-space trick run once the arm is back at the wait pose after
+    a guessed catch: rotate the base DEMO_DUMP_BASE_DEG, then wrist3
+    DEMO_DUMP_WRIST_DEG to tip the ball out of the box, then movej back to the
+    joints it started from (== the wait pose, since the caller only triggers this
+    once the arm has arrived there). Aborts and returns False the instant a fault
+    is detected, same convention as move_to()'s settled flag - the caller is
+    expected to fall into wait_for_fault_clear() same as any other move here."""
+    start_q = list(rtde_r.getActualQ())
+
+    q1 = list(start_q)
+    q1[0] += math.radians(DEMO_DUMP_BASE_DEG)
+    send_script(movej_script(q1, DEMO_DUMP_SPEED, DEMO_DUMP_ACCEL))
+    wait_for_stop(rtde_r, is_joint=True, current=start_q, target=q1)
+    if check_safety_mode(rtde_r, dash, last_normal) is not None:
+        return False
+
+    q2 = list(q1)
+    q2[5] += math.radians(DEMO_DUMP_WRIST_DEG)
+    send_script(movej_script(q2, DEMO_DUMP_SPEED, DEMO_DUMP_ACCEL))
+    wait_for_stop(rtde_r, is_joint=True, current=q1, target=q2)
+    if check_safety_mode(rtde_r, dash, last_normal) is not None:
+        return False
+
+    send_script(movej_script(start_q, DEMO_DUMP_SPEED, DEMO_DUMP_ACCEL))
+    wait_for_stop(rtde_r, is_joint=True, current=q2, target=start_q)
+    return check_safety_mode(rtde_r, dash, last_normal) is None
+
+
+# demo.py-only (2026-08-25): dump onto a second tracked rigid body ("TARGET",
+# Motive asset id TARGET_RB_ID). If TARGET isn't currently tracked, or fails
+# the same envelope check every other catch target goes through, nothing is
+# dumped at all - the arm just stays at the wait pose it already returned to
+# (user directive: no more "dump in place" fallback - dump_ball_sequence()
+# above is now unused dead code, kept in case that trick is wanted again).
+# check_catch_envelope() is the one reviewed clamp-off path for arbitrary
+# targets (CLAUDE.md), so this reuses it rather than inventing a second,
+# unreviewed reach check - its reach band already tops out at CATCH_MAX_REACH
+# (1.20m), which is the "within 120cm of base joint" limit asked for.
+TARGET_RB_ID = 8
+
+
+def find_target_pose(target_rb_state: "BaseRBState", R: np.ndarray, t_vec: np.ndarray) -> Optional[np.ndarray]:
+    """Base-frame xyz of the TARGET rigid body, or None if it isn't currently
+    tracked (never seen this session, or occluded right now)."""
+    with BASE_RB_LOCK:
+        pos, valid = target_rb_state.latest_pos, target_rb_state.latest_valid
+    if not valid or pos is None:
+        return None
+    return mocap_point_to_base(np.array(pos), R, t_vec)
+
+
+def target_hover_pose(target_xyz: np.ndarray, wait_pose: List[float]) -> List[float]:
+    """The actual move target for dump_ball_on_target(): TARGET's x/y, z held
+    exactly at the wait pose's own z - never TARGET's z, and never higher/lower
+    than the wait pose (2026-08-25 user directive: stay in the wait pose's
+    plane the whole time, only x/y moves). Split out so the caller can run
+    this exact pose (not TARGET's raw position) through check_catch_envelope()
+    before committing to the move."""
+    return [float(target_xyz[0]), float(target_xyz[1]), float(wait_pose[2]),
+            wait_pose[3], wait_pose[4], wait_pose[5]]
+
+
+def dump_ball_on_target(rtde_r, dash, last_normal: "LastNormal", hover_pose: List[float],
+                         wait_pose: List[float], args) -> bool:
+    """Blocking: move the box centroid to `hover_pose` (base frame, x/y over
+    TARGET, z held exactly at the wait pose's own z - see target_hover_pose(),
+    already envelope-checked by the caller), tilt wrist3 DEMO_DUMP_WRIST_DEG to
+    pour the ball onto it, then movej back to `wait_pose`. Same fault-abort
+    convention as dump_ball_sequence()."""
+    settled, fault = move_to(hover_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
+    if fault is not None or not settled:
+        return False
+
+    q_hover = list(rtde_r.getActualQ())
+    q_tilt = list(q_hover)
+    q_tilt[5] += math.radians(DEMO_DUMP_WRIST_DEG)
+    send_script(movej_script(q_tilt, DEMO_DUMP_SPEED, DEMO_DUMP_ACCEL))
+    wait_for_stop(rtde_r, is_joint=True, current=q_hover, target=q_tilt)
+    if check_safety_mode(rtde_r, dash, last_normal) is not None:
+        return False
+
+    settled, fault = move_to(wait_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
+    return fault is None and settled
 
 
 def wait_for_fault_clear(rec: "Recorder", fault: str, fault_count: int, rtde_r, dash, last_normal: "LastNormal",
@@ -1744,6 +1842,8 @@ def main():
     rb_state = BaseRBState()
     if base_rb_mode:
         client.on_data_frame_received_event.handlers.append(make_base_rb_handler(rb_state, base_rb_id))
+    target_rb_state = BaseRBState()  # demo.py-only: tracks the "TARGET" rigid body (see find_target_pose)
+    client.on_data_frame_received_event.handlers.append(make_base_rb_handler(target_rb_state, TARGET_RB_ID))
 
     last_state = "idle"
     attempted = False           # fired a catch for the current throw already
@@ -1766,6 +1866,8 @@ def main():
                                 # between the normal flight->idle path and the post-fault path)
     throw_tcp_trace: List[tuple] = []   # --plot only: [(n_ball_samples, tcp_xyz), ...] this throw
     throw_guesses: List[dict] = []      # --plot only: [{"n","point","kind","verdict"}, ...] this throw
+    pending_dump = False         # demo.py only: caught_guess was True for the last throw - once the
+                                  # arm is actually back at the wait pose, look for TARGET and dump
     PRINT_MIN_INTERVAL_S = 0.08  # ~12 lines/s max during flight - readable at --poll-hz 50
     # A ball that disappears within this of the tool was (almost certainly) swallowed
     # by the box - it occludes its own markers. Validated against all 74 classifiable
@@ -1873,6 +1975,7 @@ def main():
                         reaim_count = 0
                         prev_margin = None
                         non_improving_since = None
+                        pending_dump = False  # fault preempts any dump owed for the throw that just ended
                         feasibility_cache = {}
                         abandoned = False
                         pred_window.clear()
@@ -1943,6 +2046,7 @@ def main():
                     servo_hold_logged = False
                     servo_hold_since = None
                     servo_hold_escalated = False
+                    pending_dump = False  # a new throw preempts any dump still owed - box is occupied again
                     committed_target = None
                     reaim_count = 0
                     prev_margin = None
@@ -2269,6 +2373,8 @@ def main():
                             rec.log("move", purpose="return_to_wait", target=wait_pose,
                                     move_kind="servo", settled=None, fault=None)
                             print("returning to wait pose (servo)...\n")
+                            if caught_guess:
+                                pending_dump = True  # fires once the shared arrival check below sees it get there
                         else:
                             print()  # never left the wait pose; nothing to announce
                     elif attempted and not args.dry_run:
@@ -2285,8 +2391,56 @@ def main():
                             print("WARNING: did not settle at wait pose within timeout (no fault reported) - "
                                   "check the arm before the next throw.")
                         print("at wait pose.\n")
+                        if caught_guess:
+                            pending_dump = True  # already at (or near) the wait pose - the check below fires it next tick
                     else:
                         print()
+
+                # demo.py only: the last throw was a guessed catch and the arm has been
+                # pointed back at the wait pose (servo: async re-aim above; movel/movej:
+                # already blocked until settled). Wait for it to actually be there -
+                # don't trust the "just sent the move" tick, since in servo mode that's
+                # still wherever the arm was chasing the ball from - before running the
+                # dump trick, so the base/wrist rotation starts from a known pose.
+                if state == "idle" and pending_dump and not args.dry_run:
+                    current_xyz = np.array(rtde_r.getActualTCPPose()[:3])
+                    if float(np.linalg.norm(current_xyz - wait_xyz)) < DEMO_DUMP_ARRIVAL_TOL_M:
+                        pending_dump = False
+                        # Search for TARGET every time - it's a physical prop that can move or
+                        # be absent between throws, not a one-time startup check. Envelope-check
+                        # the ACTUAL move target (xy from TARGET, z from the wait pose - see
+                        # target_hover_pose(), z deliberately never comes from TARGET's own
+                        # reading), not TARGET's raw position - CLAUDE.md's one reviewed
+                        # clamp-off path is meant to see exactly what's about to be sent.
+                        target_xyz = find_target_pose(target_rb_state, R, t_vec)
+                        hover_pose = None if target_xyz is None else target_hover_pose(target_xyz, wait_pose)
+                        target_reason = None if hover_pose is None else check_catch_envelope(np.array(hover_pose[:3]), wait_xyz)
+                        if hover_pose is not None and target_reason is None:
+                            print(f"    TARGET seen at ({target_xyz[0]:+.3f},{target_xyz[1]:+.3f}) - "
+                                  f"moving over it to dump...")
+                            if servo_mode:
+                                stop_servo_stream("dump")
+                            rec.log("move", purpose="post_catch_dump_target", target=hover_pose)
+                            dumped = dump_ball_on_target(rtde_r, dash, last_normal, hover_pose, wait_pose, args)
+                            rec.log("move", purpose="post_catch_dump", settled=dumped)
+                            if not dumped:
+                                fault = check_safety_mode(rtde_r, dash, last_normal)
+                                if fault is not None:
+                                    fault_count = wait_for_fault_clear(rec, fault, fault_count, rtde_r, dash, last_normal, wait_pose, args)
+                            if servo_mode:
+                                set_servo_return_mode(True)
+                                servo_target = wait_xyz.copy()
+                                servo_orient = list(wait_pose[3:6])
+                                start_servo_stream()
+                            print("ball dumped, back at wait pose.\n")
+                        else:
+                            # No TARGET in range (not tracked, or fails the envelope - e.g.
+                            # too far away) - 2026-08-25 user directive: don't dump anywhere
+                            # in that case, just stay at the wait pose the normal
+                            # return-to-wait already reached. No motion, no stream touched.
+                            reason = "not tracked" if target_xyz is None else target_reason
+                            print(f"    TARGET {reason} - staying at wait pose, ball not dumped.\n")
+                            rec.log("move", purpose="post_catch_dump_skipped", reason=reason)
 
                 last_state = state
                 # Last thing in the loop so the setpoint reflects the newest
