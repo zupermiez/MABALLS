@@ -33,9 +33,17 @@ achieve nothing except being pointed the wrong way.
 
 SAFETY. All three of ur_servo.py's layers apply (rate limiter, robot-side
 watchdog, IK guard); on top of them this file adds, every tick:
-  - catch.py's reviewed check_catch_envelope() on the desired target AND again on
-    the rate-limited setpoint actually sent (reach/z/azimuth bands). Same single
-    reviewed clamp-off path CLAUDE.md requires - not a --force sprinkle.
+  - a soft MAX_REACH ceiling on the desired target AND again on the rate-limited
+    setpoint actually sent - track_rigid_body.py's model, reused here rather than
+    catch.py's check_catch_envelope(). check_catch_envelope()'s reach/z/azimuth
+    bands are tuned for a COMMITTED high-speed catch move (e.g. its 0.55m reach
+    floor exists to keep a box swung at ~1 m/s clear of the arm's own body); this
+    script is slow, hand-guided, perception-only tracking with no commit and no
+    catch band, and reusing that gate here just held the arm any time the ball
+    was moved anywhere near the base - exactly where a hand naturally holds it.
+    No floor is enforced, matching track_rigid_body.py precedent (proven working):
+    the joint-margin checks below are what actually guard against driving the box
+    into the arm's own body at close reach.
   - track_rigid_body.py's joint position/speed margin checks, which turn a silent
     "joint near limit" controller lockup into an early, legible stop.
   - a bad-mocap-data sanity distance, and a stale-tracking timeout.
@@ -73,11 +81,9 @@ from track_rigid_body import (
     JOINT_LIMIT_DEG, JOINT_WARN_MARGIN_DEG, JOINT_STOP_MARGIN_DEG,
     DEFAULT_BASE_SHOULDER_SPEED_LIMIT_DEG_S, DEFAULT_ELBOW_WRIST_SPEED_LIMIT_DEG_S,
     JOINT_SPEED_WARN_MARGIN_DEG_S, JOINT_SPEED_STOP_MARGIN_DEG_S,
+    MAX_REACH,
 )
-from catch import (
-    DEFAULT_WAIT_POSE, check_catch_envelope, check_safety_mode, LastNormal,
-    yaw_follow_orientation,
-)
+from catch import DEFAULT_WAIT_POSE, check_safety_mode, LastNormal, yaw_follow_orientation
 from ur_servo import RateLimiter, ServoStream, add_servo_args
 
 # The ball's rigid-body id. Defaults to 3 for the same reason catch.py does:
@@ -226,6 +232,9 @@ def build_args():
                    help="Reference pose: orientation held, position used as the envelope's azimuth reference")
     p.add_argument("--start-tolerance", type=float, default=DEFAULT_START_TOLERANCE,
                    help="m - refuse to start if the arm is further than this from the wait pose")
+    p.add_argument("--max-reach", type=float, default=MAX_REACH,
+                   help=f"m from the base - soft ceiling only, no floor (default {MAX_REACH}, "
+                        f"track_rigid_body.py's value; NOT catch.py's catch-band reach)")
     p.add_argument("--yaw-follow", action="store_true",
                    help="Pan the tool orientation about base Z with the target's azimuth "
                         "(catch.py's default; opt-in here until validated in streaming)")
@@ -395,9 +404,9 @@ def main():
                         hold_reason = (f"target {np.linalg.norm(desired - actual_xyz):.2f}m from the "
                                        f"arm - treating as bad mocap data")
                     else:
-                        env = check_catch_envelope(desired, wait_xyz)
-                        if env is not None:
-                            hold_reason = f"envelope: {env}"
+                        reach = float(np.linalg.norm(desired))
+                        if reach > args.max_reach:
+                            hold_reason = f"reach {reach:.2f}m beyond the {args.max_reach:.2f}m soft reach limit"
 
                 if hold_reason is not None:
                     # An explicit hold, never silence: going quiet for --sock-timeout
@@ -423,16 +432,16 @@ def main():
                     # so it is re-checked independently of the desired-target check
                     # above. A limiter bug (or a reset from an already-bad position)
                     # cannot slip a target past both.
-                    env = check_catch_envelope(cmd_xyz, wait_xyz)
-                    if env is not None:
+                    cmd_reach = float(np.linalg.norm(cmd_xyz))
+                    if cmd_reach > args.max_reach:
                         limiter.reset(actual_xyz)
                         holding = True
                         if stream is not None:
                             stream.send(list(actual_xyz) + wait_pose[3:6], servo=False)
-                        rec.log("hold", reason=f"limited setpoint outside envelope: {env}",
-                                cmd=cmd_xyz, t=sample_t)
-                        print(f"\rHOLD: limited setpoint outside envelope: {env[:70]:<70}",
-                              end="", flush=True)
+                        rec.log("hold", reason=f"limited setpoint reach {cmd_reach:.2f}m beyond "
+                                f"{args.max_reach:.2f}m soft reach limit", cmd=cmd_xyz, t=sample_t)
+                        print(f"\rHOLD: limited setpoint reach {cmd_reach:.2f}m beyond "
+                              f"{args.max_reach:.2f}m soft reach limit{'':30}", end="", flush=True)
                     else:
                         orient = (yaw_follow_orientation(wait_pose, wait_xyz, cmd_xyz)
                                   if args.yaw_follow else wait_pose[3:6])
