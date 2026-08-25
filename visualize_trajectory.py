@@ -31,7 +31,7 @@ from matplotlib.lines import Line2D
 from natnet import NatNetClient
 
 import live_trajectory as lt
-from trajectory import AXIS_NAMES, fit_trajectory
+from trajectory import AXIS_NAMES, fit_trajectory, trim_ghost_tail
 
 ACTUAL_COLOR = "#2a78d6"
 LOCKED_PRED_COLOR = "#d03b3b"
@@ -383,7 +383,16 @@ def main():
 
         with lt.STATE_LOCK:
             state = s.state
-            flight = list(s.flight_buffer)
+            # Trimmed, not raw: Motive can briefly latch onto a stray reflective
+            # point once the ball's own markers are occluded (typically entering
+            # the catch box at the end of a real flight) and keeps reporting a
+            # frozen "ghost" position at tracking_valid=True - see
+            # trajectory.trim_ghost_tail's docstring. Trimming here (not in
+            # live_trajectory.py's shared state) keeps it a display-only concern:
+            # the buffer other consumers see is untouched, and this loop's own
+            # fit/prediction calls below (step_prediction/capture_snapshots) get
+            # the benefit too since they're passed this same local `flight`.
+            flight = trim_ghost_tail(list(s.flight_buffer))
             history = list(s.history)
             last_pos = s.last_pos
             last_valid = s.last_valid

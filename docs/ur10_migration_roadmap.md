@@ -84,12 +84,13 @@ the UR12e had configured - **check that screen before doing anything else with s
 mode on this arm.** Also unconfirmed: whether CB3's safety monitoring is simply less
 sensitive/differently-implemented than e-Series regardless of configuration.
 
-Immediate mitigations in place: stand needs physical securing (was not anchored,
-moved under load) before further testing. Servo speed/accel caps should stay well
-below the UR12e-validated defaults (`--servo-max-speed 0.8 --servo-max-accel 4.0`)
-until the safety-configuration question above is resolved - those numbers earned
-their trust on hardware that reliably faulted instead of colliding; that trust does
-not automatically transfer here.
+Mitigations: servo speed/accel caps have already been lowered below the
+UR12e-validated defaults (`--servo-max-speed 0.8 --servo-max-accel 4.0`) - done, no
+need to re-flag this every session. Still open: stand needs physical securing (was
+not anchored, moved under load) before trusting fast motion near it again, and the
+safety-configuration question above (wide-open CB3 defaults vs. UR12e's tuned
+limits) is still unconfirmed - worth a real check next time someone's on-site with
+the pendant, not an every-session blocker.
 
 ## Key differences from the UR12e setup (verify, don't assume)
 

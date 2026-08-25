@@ -70,6 +70,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 from collections import deque
 from typing import List, Optional
 
@@ -80,7 +81,7 @@ import rtde_receive
 from natnet import NatNetClient, DataFrame
 
 from live_trajectory import STATE_LOCK, SharedState, add_release_detection_args, make_handler
-from trajectory import AXIS_NAMES
+from trajectory import AXIS_NAMES, trim_ghost_tail
 from frames import mocap_point_to_base, quat_to_matrix, base_from_mocap_via_rigid_body
 from ur_goto_raw import (ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script,
                           movej_to_pose_script, movej_script, wait_for_stop)
@@ -114,7 +115,21 @@ from catch_feasibility import (
 # safe boundary between 0.37 and 0.538m is uncharacterized (no joint-angle telemetry
 # was logged for either the incident or the successes); this trades away that slice
 # of workspace rather than guess at it.
-CATCH_MIN_REACH = 0.45   # m from base - inside this is near-singular / too close to the body
+#
+# --- 2026-08-25: raised 0.45->0.55m, user directive after a real near-self-collision
+# on the UR10 (had to e-stop). That session (catch_logs/catch_log_20260825_131509.jsonl,
+# throw 4) never actually sent a target under 0.4504m - check_catch_envelope() held the
+# 0.45m floor exactly, refusing every retarget candidate below it (one predicted point
+# at 0.408m was rejected outright) - but the arm still got close enough to worry about.
+# Root cause: `reach` here is a bare distance from the base ORIGIN to the commanded TCP
+# point - it doesn't inflate for the box's own geometry (box_radius, ~0.15m) or account
+# for tool orientation (tilt/yaw-follow can point the box back toward the arm's own
+# links at a given XYZ), so 0.45m of "reach" did not translate to 0.45m of real
+# clearance. Raising the floor is a blunt fix for that gap, not a geometric one - still
+# no swept-volume/orientation-aware check exists. 0.55m stays well clear of
+# DEFAULT_WAIT_POSE's own reach on this arm (0.641m), so the wait pose can't reject
+# itself the way the 2026-07-15 note above once had to watch for.
+CATCH_MIN_REACH = 0.55   # m from base - inside this is near-singular / too close to the body
 CATCH_MAX_REACH = 1.20   # m from base - was 1.00; user directive 2026-07-15: attempt catches out to 1.20m
 # CATCH_Z_MIN raised -0.25->0.119 2026-07-27: a real collision (paint scraped off the
 # wrist3 housing against the base's mounting stand, C157A1 fault) was traced to a
@@ -126,7 +141,8 @@ CATCH_MAX_REACH = 1.20   # m from base - was 1.00; user directive 2026-07-15: at
 # danger mark (0.139 - 0.02 = 0.119), applied as a flat cutoff regardless of reach -
 # this trades away catching low throws far from the base (which were never actually
 # near the stand) for a much simpler, physically-grounded rule. CATCH_MIN_REACH left
-# at 0.45m per the same reasoning: it isn't what caused this incident.
+# unchanged per the same reasoning: it isn't what caused this incident (raised
+# separately, see the 2026-08-25 note above).
 #
 # --- 2026-08-24 UR10 (CB3) migration: overwritten in place for the new arm/location,
 # per user directive (git-recoverable, not branched - see docs/ur10_migration_roadmap.md).
@@ -233,6 +249,26 @@ SERVO_BASE_RATE_DEG_S = 110.0
 # rate while stopping it from scaling with the servo rate.
 SAFETY_CHECK_MIN_INTERVAL_S = 0.02
 
+# --- Idle wobble (2026-08-25, demo.py-only, --catch-move servo only) -----------
+# Purely cosmetic "catcher waiting" tell so an audience can see the stream is
+# live and not frozen: while genuinely idle, servo_target orbits a small circle
+# around the wait pose instead of sitting dead still. NOT yet run on the real
+# arm - opt-in via --idle-wobble (see [[unvalidated_changes_policy]]-style
+# convention used throughout this file: --tilt-follow/--reaim-preempt/
+# --catch-move servo itself all started opt-in and were promoted to default
+# only after a real validated session).
+#
+# Deliberately slow/small enough to sit far under the servo RateLimiter's own
+# speed/accel caps regardless of which regime (chase vs. return) happens to be
+# active when idle - the wobble must never be what binds those, since a bound
+# wobble would fight the limiter's real job (bounding CATCH motion) for no
+# reason. At the defaults below: peak speed = 2*pi*r/T = 2*pi*0.075/6.0 =~
+# 0.079 m/s, centripetal accel = r*omega^2 =~ 0.082 m/s^2 - both under 10% of
+# even the slowest catch cap (--servo-max-speed 0.8, --servo-max-accel 4.0),
+# so the limiter tracks the circle with negligible lag rather than fighting it.
+IDLE_WOBBLE_DIAMETER_M = 0.15   # ~15cm circle, per user directive
+IDLE_WOBBLE_PERIOD_S = 6.0      # seconds per full lap - slow, visible, low-energy
+
 
 def rnd(x, nd: int = 4):
     """Round floats (recursively through lists/tuples/ndarrays/dicts) for compact JSON.
@@ -337,6 +373,53 @@ def _verdict(r) -> str:
     return "miss"
 
 
+def explain_miss(guard_reason: Optional[str], attempted: bool, abandoned: bool,
+                  refuse_reason: Optional[str], refuse_target: Optional[np.ndarray],
+                  result, history_head, ball_last_dist: Optional[float]) -> str:
+    """demo.py only: a best-guess, data-backed one-liner for why a throw wasn't
+    caught - pure console flavor for the demo audience, not a control input or
+    anything logged as ground truth (the real mechanics are already in
+    guard_reason/refuse_reason/result/rec.log). Follows the same decision
+    chain the main loop itself used to reach "no catch", in order: release
+    guard (never even eligible to commit) -> envelope refusal (commit was
+    tried and rejected) -> no plane crossing / lost tracking (nothing to
+    commit to) -> chase-abort (committed, then fell behind) -> plain miss
+    distance (committed, arrived, still missed). Deliberately blunt and
+    second-person - "You threw too far", not "target reach exceeded envelope
+    bound" - so keep new branches in that voice rather than reusing the
+    precise machine-readable reason strings verbatim."""
+    if guard_reason is not None:
+        if "hand/handled" in guard_reason:
+            return "you let go of that right next to me - that's a handoff, not a throw."
+        return "that one was headed away from me, not at me."
+
+    if not attempted:
+        if refuse_reason is not None and refuse_target is not None:
+            reach = float(np.linalg.norm(refuse_target))
+            z = float(refuse_target[2])
+            if reach > CATCH_MAX_REACH:
+                return f"you threw too far - {reach:.2f}m out, {reach - CATCH_MAX_REACH:.2f}m past my reach."
+            if reach < CATCH_MIN_REACH:
+                return f"you threw too close - only {reach:.2f}m out, right on top of me."
+            if z > CATCH_Z_MAX:
+                return "you threw too high - that sailed over my head."
+            if z < CATCH_Z_MIN:
+                return "you threw too low - that would've hit the stand."
+            return "that one was too far off to the side of me."
+        if result is not None and result.crossing_t is None:
+            return "you threw it on a path that never even reached my catch height."
+        if history_head is not None and history_head.reason == "lost tracking":
+            return "I lost sight of the ball mid-flight - not on you."
+        return "I never got a good enough read on that one in time."
+
+    if abandoned:
+        return "you threw that too fast."
+
+    if ball_last_dist is not None:
+        return f"close, but I missed it by about {ball_last_dist * 100:.0f}cm."
+    return "not sure what happened there - just missed it."
+
+
 # Real bug found 2026-08-25 (first UR10 session with base_rb_mode live):
 # Motive's rigid-body solver can briefly latch onto a stray reflective point
 # once the ball's own markers are occluded entering the box, and keeps
@@ -347,30 +430,22 @@ def _verdict(r) -> str:
 # (-0.709, 0.203, -0.467 mocap, both throws, within a few mm) instead of
 # continuing the ball's smooth path - so the caught/miss heuristic below,
 # which trusted raw_samples[-1] outright, measured "ball last seen" against a
-# ghost point and logged a false miss on two good catches. A real ball at
-# 120Hz never moves >MAX_BALL_JUMP_M in one frame even at speeds far above
-# anything thrown here - so trim any trailing run introduced by a jump that
-# large instead of trusting the literal last sample.
-MAX_BALL_JUMP_M = 0.5
+# ghost point and logged a false miss on two good catches. Ghost-tail
+# detection itself now lives in trajectory.trim_ghost_tail() (imported above,
+# with its MAX_BALL_JUMP_M threshold) - shared with catch.py,
+# visualize_trajectory.py, and anything else that draws or measures against a
+# sample buffer's tail.
 
 
 def last_plausible_ball_sample(raw_samples: list):
     """Return the raw_samples entry to trust as "where the ball was last seen" -
     the true last sample, unless an implausible single-frame jump (see
-    MAX_BALL_JUMP_M above) occurred somewhere in the tail, in which case
+    trajectory.trim_ghost_tail) occurred somewhere in the tail, in which case
     return the sample right before the most recent such jump instead of the
     ghost point(s) after it. No-op (returns raw_samples[-1]) on a normal,
     continuously-tracked flight."""
-    if not raw_samples:
-        return None
-    trusted_idx = len(raw_samples) - 1
-    for i in range(len(raw_samples) - 1, 0, -1):
-        a, b = raw_samples[i - 1], raw_samples[i]
-        jump = math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2)
-        if jump > MAX_BALL_JUMP_M:
-            trusted_idx = i - 1
-            break
-    return raw_samples[trusted_idx]
+    trimmed = trim_ghost_tail(raw_samples)
+    return trimmed[-1] if trimmed else None
 
 
 def stopl_script(decel: float = 3.0) -> str:
@@ -528,11 +603,11 @@ def check_catch_envelope(target_xyz: np.ndarray, wait_xyz: Optional[np.ndarray] 
 def clamp_to_envelope(p: np.ndarray, margin: float = 0.0) -> np.ndarray:
     """Project a point into the catch envelope's reach and z bands.
 
-    Exists because the envelope is NOT CONVEX: it is an annulus (reach 0.45-1.20m)
+    Exists because the envelope is NOT CONVEX: it is an annulus (reach 0.55-1.20m)
     intersected with a z band and an azimuth wedge, so a straight line between two
     perfectly valid points can leave it. Concretely, sweeping the setpoint from the
     wait pose (reach 0.73m) to a low-reach side target cuts the corner and dips
-    under the 0.45m inner bound partway across.
+    under the 0.55m inner bound partway across.
 
     That matters only for streaming. A discrete movel/movej is checked once, at its
     endpoint, and the controller owns the path in between; a servo setpoint IS the
@@ -590,6 +665,27 @@ def reach_band_at_z(z: float) -> tuple:
     h_max = math.sqrt(max((CATCH_MAX_REACH - eps) ** 2 - z * z, 0.0))
     return h_min, h_max
 
+
+
+def idle_wobble_offset(now_t: float, diameter: float = IDLE_WOBBLE_DIAMETER_M,
+                       period: float = IDLE_WOBBLE_PERIOD_S) -> np.ndarray:
+    """Base-frame (dx, dy, 0) offset for the idle 'catcher waiting' animation - a
+    point on a `diameter`-wide circle, phase driven directly by wall-clock
+    monotonic time rather than a tracked start-time/phase variable, so pausing
+    the wobble (e.g. during pending_dump) and resuming it later just picks the
+    circle back up wherever it currently sits instead of jumping to a fixed
+    start angle.
+
+    Horizontal only (z always 0) and deliberate: derive_catch_plane() fixes the
+    catch plane's height from wait_xyz's height ONCE at startup, so any z
+    component here would need to feed back into that plane - staying
+    horizontal keeps the wobble fully decoupled from the catch geometry.
+    Added onto wait_xyz by the caller; never used as an absolute point.
+    """
+    omega = 2.0 * math.pi / period
+    ang = omega * now_t
+    r = diameter / 2.0
+    return np.array([r * math.cos(ang), r * math.sin(ang), 0.0])
 
 
 def derive_catch_plane(wait_xyz: np.ndarray, R: np.ndarray, t_vec: np.ndarray) -> float:
@@ -841,14 +937,138 @@ def target_hover_pose(target_xyz: np.ndarray, wait_pose: List[float]) -> List[fl
             wait_pose[3], wait_pose[4], wait_pose[5]]
 
 
-def dump_ball_on_target(rtde_r, dash, last_normal: "LastNormal", hover_pose: List[float],
-                         wait_pose: List[float], args) -> bool:
+def target_aim_pose(target_xyz: np.ndarray, wait_pose: List[float], wait_xyz: np.ndarray) -> List[float]:
+    """Intermediate pose for dump_ball_on_target(): same horizontal reach and z
+    as the wait pose itself - only the azimuth changes, rotated to face
+    TARGET - with orientation carried along via yaw_follow_orientation (keeps
+    the wrist configuration constant relative to the arm's own plane, so IK
+    resolves to "rotate the base, nothing else" instead of picking a different
+    elbow/wrist branch).
+
+    2026-08-25 user directive: TARGET can be anywhere around the robot, unlike
+    a live catch target where CATCH_MAX_AZIMUTH_DEG's +-75deg band is a real,
+    unrelaxed safety limit (see check_catch_envelope). The dump move is instead
+    made safe by splitting it into two legs - rotate to this pose first (same
+    reach as the wait pose, so the arm sweeps no wider than it already sits at
+    rest), THEN extend outward from here to the real hover_pose (reach only
+    changes, azimuth is already correct) - rather than by bounding azimuth at
+    all. Same mirrored pair on the way back (retract to this pose, then rotate
+    back to wait_pose) - see dump_ball_on_target().
+    """
+    wait_h = float(np.hypot(wait_xyz[0], wait_xyz[1]))
+    az_tgt = math.atan2(float(target_xyz[1]), float(target_xyz[0]))
+    orient = yaw_follow_orientation(wait_pose, wait_xyz, target_xyz)
+    return [wait_h * math.cos(az_tgt), wait_h * math.sin(az_tgt), float(wait_pose[2])] + orient
+
+
+def wait_until_actually_stopped(rtde_r, timeout: float = 2.0,
+                                 settle_speed: float = 0.005, settle_ticks: int = 5) -> bool:
+    """Block until the arm's real TCP speed reads near-zero for `settle_ticks`
+    consecutive polls, or `timeout` elapses. Returns whether it actually settled.
+
+    Unlike move_to()/wait_for_stop(), this does NOT wait for motion to start
+    first - it's for confirming the arm is ALREADY at rest before sending the
+    NEXT command, not for judging whether a just-sent move arrived.
+
+    2026-08-25 real incident this exists for: dump_ball_on_target()'s first
+    move_to() call used to fire immediately after stop_servo_stream() cut the
+    live servo stream - but the arm was still mid-return-to-wait-pose (still
+    ~7cm out, servo_cmd showed real velocity right up to the same tick) when
+    the stream was torn down. move_to()'s "has real motion started" check saw
+    that leftover/decelerating velocity, and as it decayed within the
+    required settle window, move_to() declared the hover move "arrived" after
+    only 0.4s - every other identical leg that session took 2.2-3.1s - while
+    the arm was still ~0.66m short of hover_pose. The dump trick then tilted
+    and poured right there (next to the wait pose) instead of over TARGET.
+    Call this after tearing down the stream and before the first move_to()
+    that follows it, so leftover motion can never again masquerade as the
+    next move's own.
+    """
+    slow_streak = 0
+    start = time.time()
+    while time.time() - start < timeout:
+        peak = max(abs(v) for v in rtde_r.getActualTCPSpeed())
+        if peak < settle_speed:
+            slow_streak += 1
+            if slow_streak >= settle_ticks:
+                return True
+        else:
+            slow_streak = 0
+        time.sleep(0.05)
+    return False
+
+
+def dump_ball_on_target(rec: "Recorder", rtde_r, dash, last_normal: "LastNormal", aim_pose: List[float],
+                         hover_pose: List[float], wait_pose: List[float], args) -> bool:
     """Blocking: move the box centroid to `hover_pose` (base frame, x/y over
     TARGET, z held exactly at the wait pose's own z - see target_hover_pose(),
     already envelope-checked by the caller), tilt wrist3 DEMO_DUMP_WRIST_DEG to
-    pour the ball onto it, then movej back to `wait_pose`. Same fault-abort
-    convention as dump_ball_sequence()."""
+    pour the ball onto it, movej literally back to the pre-tilt joints, then
+    movej back to `wait_pose`. Same fault-abort convention as
+    dump_ball_sequence(). Every leg is a plain movej (either a literal joint
+    target, or move_to()'s pose-resolved-to-joints-via-IK) - no movel anywhere
+    in this trick, on purpose (2026-08-25 user directive after the incident
+    below: keep it plain).
+
+    Rotate-then-extend (2026-08-25 user directive): TARGET can be at ANY
+    azimuth around the robot, including well outside CATCH_MAX_AZIMUTH_DEG's
+    +-75deg live-catch band - the caller deliberately skips that check for the
+    dump target (see target_hover_pose()'s call site) and passes `aim_pose`
+    (target_aim_pose(): same reach/z as the wait pose, rotated to TARGET's
+    azimuth) instead. Both the outbound and return trips detour through
+    aim_pose, splitting what would otherwise be one movej that changes reach
+    AND azimuth at once into two: rotate while still retracted at the wait
+    pose's own reach (can't sweep any wider than the arm already sits at
+    rest), then extend outward once already pointed the right way (reach only
+    changes, azimuth doesn't) - and the mirror image coming back. This is what
+    replaces the azimuth band for this path, rather than the move just being
+    unbounded.
+
+    Logs actual TCP pose after every leg individually (`post_catch_dump_hover`/
+    `_tilt`/`_untilt`/`_return`) - 2026-08-25: the old version logged only one
+    aggregate pass/fail for the whole function, so a real incident (the return
+    leg swept the arm "somewhere crazy") left no trace of which leg failed or
+    where the arm actually went. This is that fix.
+
+    Return leg: also 2026-08-25, same real incident. The previous version went
+    straight from the tilted pose (q_tilt, wrist3 +DEMO_DUMP_WRIST_DEG off
+    nominal) into move_to(wait_pose, ...), which resolves via
+    get_inverse_kin(wait_pose, qnear=q_tilt) - a starting joint configuration
+    nothing had ever validated a return move from, and on the real run it did
+    not cleanly unwind. Fix: movej literally back to q_hover first (the exact
+    joints recorded right after the hover move arrived, before the tilt) - a
+    guaranteed retrace of the tilt, same trick dump_ball_sequence() (dead
+    code, above) always used - THEN do the normal move_to(wait_pose, ...) from
+    q_hover, a normal, already-proven-safe starting configuration for that
+    call. Never let move_to() resolve fresh IK from the twisted q_tilt again.
+
+    Hover leg: 2026-08-25, a third real incident, same session type as the two
+    above but a different mechanism - see wait_until_actually_stopped()'s
+    docstring. This function's first move (to hover_pose) is always called
+    immediately after the live servo stream was just torn down, so it opens
+    with a blocking wait for that leftover motion to actually die down before
+    ever calling move_to() - otherwise move_to()'s settle-detection can mistake
+    the stream's dying velocity for the new move's own and report "arrived"
+    almost instantly, while the arm is still wherever the stream left it.
+    """
+    if not wait_until_actually_stopped(rtde_r):
+        rec.log("move", purpose="post_catch_dump_prestart_timeout",
+                note="arm still moving 2s after the servo stream was torn down - proceeding anyway")
+
+    def log_leg(purpose: str, settled: bool, fault: Optional[str]) -> None:
+        try:
+            actual_tcp = list(rtde_r.getActualTCPPose())
+        except Exception:
+            actual_tcp = None
+        rec.log("move", purpose=purpose, settled=settled, fault=fault, actual_tcp=actual_tcp)
+
+    settled, fault = move_to(aim_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
+    log_leg("post_catch_dump_aim", settled, fault)
+    if fault is not None or not settled:
+        return False
+
     settled, fault = move_to(hover_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
+    log_leg("post_catch_dump_hover", settled, fault)
     if fault is not None or not settled:
         return False
 
@@ -857,10 +1077,29 @@ def dump_ball_on_target(rtde_r, dash, last_normal: "LastNormal", hover_pose: Lis
     q_tilt[5] += math.radians(DEMO_DUMP_WRIST_DEG)
     send_script(movej_script(q_tilt, DEMO_DUMP_SPEED, DEMO_DUMP_ACCEL))
     wait_for_stop(rtde_r, is_joint=True, current=q_hover, target=q_tilt)
-    if check_safety_mode(rtde_r, dash, last_normal) is not None:
+    fault = check_safety_mode(rtde_r, dash, last_normal)
+    log_leg("post_catch_dump_tilt", fault is None, fault)
+    if fault is not None:
+        return False
+
+    # Literal unwind - NOT fresh IK - see docstring. Guaranteed retrace of the
+    # tilt leg above, so it can't pick a different IK branch or sweep
+    # somewhere unplanned the way move_to(wait_pose, ...) did from q_tilt in
+    # the real incident this replaced.
+    send_script(movej_script(q_hover, DEMO_DUMP_SPEED, DEMO_DUMP_ACCEL))
+    wait_for_stop(rtde_r, is_joint=True, current=q_tilt, target=q_hover)
+    fault = check_safety_mode(rtde_r, dash, last_normal)
+    log_leg("post_catch_dump_untilt", fault is None, fault)
+    if fault is not None:
+        return False
+
+    settled, fault = move_to(aim_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
+    log_leg("post_catch_dump_retract", settled, fault)
+    if fault is not None or not settled:
         return False
 
     settled, fault = move_to(wait_pose, args.approach_speed, args.approach_accel, rtde_r, dash, last_normal)
+    log_leg("post_catch_dump_return", settled, fault)
     return fault is None and settled
 
 
@@ -968,7 +1207,7 @@ def pull_robot_session_logs(start_wall: float, end_wall: float, out_dir: str) ->
     )
     try:
         result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=5", ROBOT_SSH_HOST, remote_cmd],
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ROBOT_SSH_HOST, remote_cmd],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode != 0:
@@ -986,7 +1225,7 @@ def pull_robot_session_logs(start_wall: float, end_wall: float, out_dir: str) ->
         for remote_path in new_reports:
             if remote_path:
                 r = subprocess.run(
-                    ["scp", "-o", "ConnectTimeout=5", f"{ROBOT_SSH_HOST}:{remote_path}", out_dir],
+                    ["scp", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", f"{ROBOT_SSH_HOST}:{remote_path}", out_dir],
                     capture_output=True, timeout=60,
                 )
                 if r.returncode == 0:
@@ -1109,9 +1348,13 @@ def wrap_up_session(session_start: float, session_end: float, throws: int,
             f.write(f"catch_log: {record_path}\n")
         f.write(f"\ndescription:\n{description or '(none)'}\n")
     print(f"session notes -> {out_dir}/notes.txt")
-    print("pulling robot logs for this session's time window...")
-    pulled_basenames = pull_robot_session_logs(session_start, session_end, out_dir)
-    build_flight_report_manifest(out_dir, pulled_basenames, record_path)
+    if args.pull_robot_logs:
+        print("pulling robot logs for this session's time window...")
+        pulled_basenames = pull_robot_session_logs(session_start, session_end, out_dir)
+        build_flight_report_manifest(out_dir, pulled_basenames, record_path)
+    else:
+        print("  (skipping robot log pull - pass --pull-robot-logs once SSH access to the "
+              "controller works; see docs/ur10_migration_roadmap.md)")
 
 
 def main():
@@ -1249,6 +1492,21 @@ def main():
                              "otherwise the last commit is held so the arm can actually settle. Does not "
                              "touch the catch envelope/reach check, so full reach is unaffected - this "
                              "only governs when the last few cm of fine retargeting happen.")
+    parser.add_argument("--idle-wobble", action="store_true",
+                        help="'Catcher waiting' animation (2026-08-25, servo mode only): while genuinely "
+                             "idle, orbit the wait pose in a small circle instead of sitting dead still - "
+                             "a visible tell that the stream is live. Opt-in, NOT yet run on the real arm; "
+                             "promote to default only after that. Slow/small by design (see "
+                             "IDLE_WOBBLE_DIAMETER_M/PERIOD_S) so it sits far under the servo limiter's "
+                             "own speed/accel caps and never touches the catch envelope, feasibility, or "
+                             "commit path - a throw still overwrites servo_target the instant it commits.")
+    parser.add_argument("--idle-wobble-diameter", type=float, default=IDLE_WOBBLE_DIAMETER_M, metavar="M",
+                        help=f"Idle wobble circle diameter, meters (default {IDLE_WOBBLE_DIAMETER_M}).")
+    parser.add_argument("--idle-wobble-period", type=float, default=IDLE_WOBBLE_PERIOD_S, metavar="S",
+                        help=f"Idle wobble seconds per lap (default {IDLE_WOBBLE_PERIOD_S}). Smaller = "
+                             "faster/more energetic; keep an eye on peak speed (pi*diameter/period) and "
+                             "centripetal accel (diameter*2*pi^2/period^2) staying well under "
+                             "--servo-max-speed/--servo-max-accel if you change either default.")
     parser.add_argument("--catch-joint-speed", type=float, default=2.0,
                         help="rad/s leading-joint speed for --catch-move movej (default 2.0 ~ 115deg/s, "
                              "just under the 120deg/s base/shoulder limit)")
@@ -1389,6 +1647,18 @@ def main():
     parser.add_argument("--robot-ip", default=ROBOT_IP, help="UR12e controller IP")
     parser.add_argument("--no-wrapup", action="store_true",
                         help="Skip the end-of-session name/description prompt and robot log pull")
+    parser.add_argument("--pull-robot-logs", action="store_true",
+                        help="Also SSH-pull the robot controller's own log_history.txt/polyscope.log/flight-"
+                             "report slice for this session (see pull_robot_session_logs()). Off by default "
+                             "since 2026-08-25: the new UR10 controller doesn't have this laptop's key "
+                             "authorized yet (SSH access there is still a roadmap TODO, see "
+                             "docs/ur10_migration_roadmap.md), so it was falling back to an interactive "
+                             "password prompt nobody has the password for - a long hang on every session end, "
+                             "not a quick skip. The name/description prompt and notes.txt still always run; "
+                             "this flag only gates the extra SSH round-trip on top of that. BatchMode=yes on "
+                             "the ssh/scp calls themselves (see pull_robot_session_logs()) is a second, "
+                             "independent guard so re-enabling this can never hang on a password prompt again "
+                             "either, even by accident.")
     parser.add_argument("--no-beep", action="store_true",
                         help="Disable audio cues for predict/reaim/catch/miss events")
     args = parser.parse_args()
@@ -1596,7 +1866,9 @@ def main():
                     "freeze_dist": args.servo_freeze_dist,
                     "orient_max_rate_deg_s": args.servo_orient_max_rate_deg_s,
                     "orient_max_accel_deg_s2": args.servo_orient_max_accel_deg_s2,
-                    "host": f"{args.servo_host_ip}:{args.servo_host_port}"} if servo_mode else None))
+                    "host": f"{args.servo_host_ip}:{args.servo_host_port}"} if servo_mode else None),
+            idle_wobble=(args.idle_wobble and servo_mode),
+            idle_wobble_diameter_m=args.idle_wobble_diameter, idle_wobble_period_s=args.idle_wobble_period)
 
     if not args.dry_run:
         initial_sweep = float(np.linalg.norm(np.array(current_pose[:3]) - wait_xyz))
@@ -1855,6 +2127,9 @@ def main():
     non_improving_since = None  # monotonic time the current flat-or-worse-margin streak started, or None
     feasibility_cache: dict = {}  # per-throw cache for check_feasibility's fit/solve step - see its docstring
     abandoned = False           # True once the current throw's chase has been given up on
+    last_result = None          # most recent FeasibilityResult computed this throw - feeds explain_miss()
+    last_refuse_reason = None   # check_catch_envelope() reason text from the last refusal this throw
+    last_refuse_target = None   # base-frame xyz that refusal was against - feeds explain_miss()
     catches = 0                 # session tally: attempted throws whose ball was last seen at the tool
     attempts_ended = 0          # attempted throws that reached throw_end (denominator for the tally)
     last_print_wall = 0.0       # console print throttle (ticks are recorded regardless)
@@ -1868,6 +2143,7 @@ def main():
     throw_guesses: List[dict] = []      # --plot only: [{"n","point","kind","verdict"}, ...] this throw
     pending_dump = False         # demo.py only: caught_guess was True for the last throw - once the
                                   # arm is actually back at the wait pose, look for TARGET and dump
+    dump_skip_logged = False    # throttle "TARGET out of range" spam while waiting on one dump opportunity
     PRINT_MIN_INTERVAL_S = 0.08  # ~12 lines/s max during flight - readable at --poll-hz 50
     # A ball that disappears within this of the tool was (almost certainly) swallowed
     # by the box - it occludes its own markers. Validated against all 74 classifiable
@@ -1976,8 +2252,12 @@ def main():
                         prev_margin = None
                         non_improving_since = None
                         pending_dump = False  # fault preempts any dump owed for the throw that just ended
+                        dump_skip_logged = False
                         feasibility_cache = {}
                         abandoned = False
+                        last_result = None
+                        last_refuse_reason = None
+                        last_refuse_target = None
                         pred_window.clear()
                         throw_tcp_trace = []
                         throw_guesses = []
@@ -2047,12 +2327,16 @@ def main():
                     servo_hold_since = None
                     servo_hold_escalated = False
                     pending_dump = False  # a new throw preempts any dump still owed - box is occupied again
+                    dump_skip_logged = False
                     committed_target = None
                     reaim_count = 0
                     prev_margin = None
                     non_improving_since = None
                     feasibility_cache = {}
                     abandoned = False
+                    last_result = None
+                    last_refuse_reason = None
+                    last_refuse_target = None
                     pred_window.clear()
                     throw_tcp_trace = []
                     throw_guesses = []
@@ -2090,6 +2374,7 @@ def main():
                         model, CATCH_MIN_REACH, CATCH_MAX_REACH, args.margin, args.box_radius,
                         cache=feasibility_cache,
                     )
+                    last_result = result  # feeds explain_miss() at throw_end regardless of outcome below
                     if result.crossing_t is not None:
                         pred_window.append(result.catch_point_base)
                         now_wall = time.time()
@@ -2158,6 +2443,8 @@ def main():
                                            orient[0], orient[1], orient[2]]
                             reason = check_catch_envelope(commit_point, wait_xyz)
                             if reason is not None:
+                                last_refuse_reason = reason  # feeds explain_miss() at throw_end
+                                last_refuse_target = np.array(commit_point, dtype=float)
                                 if not refuse_logged:
                                     print(f"    >> REFUSED (envelope): {reason} - no motion sent")
                                     refuse_logged = True
@@ -2303,6 +2590,7 @@ def main():
                     # log, not a control input.
                     caught_guess = None
                     ball_last_dist = None
+                    excuse = None  # feeds plot_window's excuse_text - stays None on a catch (no excuse needed)
                     if history_head is not None and history_head is last_flight_logged:
                         # already logged by the post-fault capture above - don't double-log
                         last_state = state
@@ -2328,6 +2616,20 @@ def main():
                                       f"   session: {catches}/{attempts_ended} attempted")
                                 if not args.no_beep:
                                     beep.play("miss")
+                                # Excuse goes to the plot window (excuse_text), not the console -
+                                # see explain_miss()'s docstring. Still recorded in throw_end below
+                                # so a session can be researched later without needing to have had
+                                # the plot window open.
+                                excuse = explain_miss(guard_reason, attempted, abandoned,
+                                                       last_refuse_reason, last_refuse_target,
+                                                       last_result, history_head, ball_last_dist)
+                        else:
+                            # Never committed at all (guarded/refused/no crossing) - still a
+                            # miss from the demo audience's point of view, just explain why
+                            # the arm never even tried.
+                            excuse = explain_miss(guard_reason, attempted, abandoned,
+                                                   last_refuse_reason, last_refuse_target,
+                                                   last_result, history_head, ball_last_dist)
                     rec.log("throw_end",
                             reason=history_head.reason if history_head else None,
                             duration=history_head.duration if history_head else None,
@@ -2335,7 +2637,7 @@ def main():
                             peak_speed=history_head.peak_speed if history_head else None,
                             attempted=attempted, arm_tcp_at_end=end_tcp,
                             guarded=guard_reason is not None, reaims=reaim_count,
-                            ball_last_dist_m=ball_last_dist, caught_guess=caught_guess)
+                            ball_last_dist_m=ball_last_dist, caught_guess=caught_guess, excuse=excuse)
                     # The actual ground-truth ball trajectory for this throw, not just
                     # its summary stats - a separate event (not folded into throw_end)
                     # so a plain grep for throw_end stays small/scannable while this
@@ -2348,17 +2650,23 @@ def main():
                         rec.log("throw_samples", t=history_head.raw_samples[0].t,
                                 raw=[[s.t, s.x, s.y, s.z] for s in history_head.raw_samples])
                     if plot_window is not None and history_head is not None and history_head.raw_samples:
+                        # Trimmed, not raw: a ghost-marker tail (see trim_ghost_tail's
+                        # docstring) is real, unedited data and belongs in the JSONL log
+                        # above, but has no business being drawn as part of the ball's
+                        # path - it isn't where the ball went.
+                        plot_samples = trim_ghost_tail(history_head.raw_samples)
                         ball_base = np.array([
                             mocap_point_to_base(np.array([s.x, s.y, s.z]), R, t_vec)
-                            for s in history_head.raw_samples
+                            for s in plot_samples
                         ])
-                        ball_t = np.array([s.t for s in history_head.raw_samples])
+                        ball_t = np.array([s.t for s in plot_samples])
                         plot_window.update(
                             rec.throw, ball_base, ball_t, throw_tcp_trace, throw_guesses,
                             meta=dict(attempted=attempted, caught_guess=caught_guess,
                                      ball_last_dist_m=ball_last_dist, duration=history_head.duration,
                                      samples=history_head.samples, catch_move=args.catch_move,
-                                     dry_run=args.dry_run, reason=history_head.reason),
+                                     dry_run=args.dry_run, reason=history_head.reason, excuse=excuse,
+                                     session_catches=catches, session_attempts=attempts_ended),
                         )
                     if servo_mode:
                         # Just re-aim the stream at the wait pose - no blocking movej,
@@ -2405,23 +2713,39 @@ def main():
                 if state == "idle" and pending_dump and not args.dry_run:
                     current_xyz = np.array(rtde_r.getActualTCPPose()[:3])
                     if float(np.linalg.norm(current_xyz - wait_xyz)) < DEMO_DUMP_ARRIVAL_TOL_M:
-                        pending_dump = False
-                        # Search for TARGET every time - it's a physical prop that can move or
-                        # be absent between throws, not a one-time startup check. Envelope-check
-                        # the ACTUAL move target (xy from TARGET, z from the wait pose - see
-                        # target_hover_pose(), z deliberately never comes from TARGET's own
-                        # reading), not TARGET's raw position - CLAUDE.md's one reviewed
-                        # clamp-off path is meant to see exactly what's about to be sent.
+                        # Search for TARGET every tick while parked here, not just once on
+                        # arrival - it's a physical prop someone may still be nudging into
+                        # range, and the arm has nothing else to do at the wait pose anyway
+                        # (arriving early is free, same as everywhere else in this codebase).
+                        # 2026-08-25 fix: an earlier version gave up on the dump permanently
+                        # the instant the first check saw TARGET out of range (e.g. a real
+                        # session logged "target azimuth 81deg... refusing" and never tried
+                        # again even though the prop was visibly still being moved closer).
+                        # pending_dump now only clears once a dump is actually attempted;
+                        # a new throw starting still preempts it unconditionally (above).
+                        # Envelope-check the ACTUAL move target (xy from TARGET, z from the
+                        # wait pose - see target_hover_pose(), z deliberately never comes
+                        # from TARGET's own reading), not TARGET's raw position - CLAUDE.md's
+                        # one reviewed clamp-off path is meant to see exactly what's about to
+                        # be sent. No wait_xyz here, deliberately: unlike a live catch target,
+                        # TARGET can sit at any azimuth (2026-08-25 user directive) - the
+                        # rotate-then-extend move built into dump_ball_on_target() (via
+                        # aim_pose) is what makes an arbitrary azimuth safe here, so the
+                        # +-75deg CATCH_MAX_AZIMUTH_DEG band a live catch still enforces
+                        # doesn't apply to this path. Reach/z still do.
                         target_xyz = find_target_pose(target_rb_state, R, t_vec)
                         hover_pose = None if target_xyz is None else target_hover_pose(target_xyz, wait_pose)
-                        target_reason = None if hover_pose is None else check_catch_envelope(np.array(hover_pose[:3]), wait_xyz)
+                        aim_pose = None if target_xyz is None else target_aim_pose(target_xyz, wait_pose, wait_xyz)
+                        target_reason = None if hover_pose is None else check_catch_envelope(np.array(hover_pose[:3]))
                         if hover_pose is not None and target_reason is None:
+                            pending_dump = False
+                            dump_skip_logged = False
                             print(f"    TARGET seen at ({target_xyz[0]:+.3f},{target_xyz[1]:+.3f}) - "
                                   f"moving over it to dump...")
                             if servo_mode:
                                 stop_servo_stream("dump")
-                            rec.log("move", purpose="post_catch_dump_target", target=hover_pose)
-                            dumped = dump_ball_on_target(rtde_r, dash, last_normal, hover_pose, wait_pose, args)
+                            rec.log("move", purpose="post_catch_dump_target", target=hover_pose, aim=aim_pose)
+                            dumped = dump_ball_on_target(rec, rtde_r, dash, last_normal, aim_pose, hover_pose, wait_pose, args)
                             rec.log("move", purpose="post_catch_dump", settled=dumped)
                             if not dumped:
                                 fault = check_safety_mode(rtde_r, dash, last_normal)
@@ -2431,16 +2755,57 @@ def main():
                                 set_servo_return_mode(True)
                                 servo_target = wait_xyz.copy()
                                 servo_orient = list(wait_pose[3:6])
-                                start_servo_stream()
+                                # Same SystemExit trap as the post-fault-clear reconnect
+                                # above, and for the same reason: this reconnect is most
+                                # likely to fail exactly when something just went wrong
+                                # (e.g. the E-STOP a dump-trick fault can prompt a bystander
+                                # to hit) - letting it propagate uncaught skips the
+                                # try/finally's wrap_up_session() call, silently losing the
+                                # SSH log pull for the fault that matters most. This call
+                                # site was missed by the 2026-07-27 fix (only the other one
+                                # was wrapped) - found 2026-08-25 when it happened for real.
+                                try:
+                                    start_servo_stream()
+                                except SystemExit as e:
+                                    print(f"    !! could not re-open servo stream: {e}")
+                                    print("    ending session here so the fault's logs can still be pulled.")
+                                    rec.log("servo_stream", state="reopen_failed", reason=str(e))
+                                    stop_reason = "servo_reconnect_failed"
+                                    break
                             print("ball dumped, back at wait pose.\n")
                         else:
                             # No TARGET in range (not tracked, or fails the envelope - e.g.
                             # too far away) - 2026-08-25 user directive: don't dump anywhere
                             # in that case, just stay at the wait pose the normal
                             # return-to-wait already reached. No motion, no stream touched.
+                            # pending_dump stays True: keep retrying every tick (throttled
+                            # print only) so a TARGET moved into range a moment later still
+                            # gets the dump, instead of this being a one-shot check.
                             reason = "not tracked" if target_xyz is None else target_reason
-                            print(f"    TARGET {reason} - staying at wait pose, ball not dumped.\n")
-                            rec.log("move", purpose="post_catch_dump_skipped", reason=reason)
+                            if not dump_skip_logged:
+                                # Logged once per skip streak, not every tick - this wait is
+                                # unbounded (only a new throw cancels it), unlike the bounded
+                                # per-throw ticks the "log every tick" convention elsewhere
+                                # assumes.
+                                print(f"    TARGET {reason} - waiting at wait pose for it to "
+                                      f"come into range (ball not dumped yet)...\n")
+                                rec.log("move", purpose="post_catch_dump_skipped", reason=reason)
+                                dump_skip_logged = True
+
+                # Idle wobble (--idle-wobble): only while genuinely idle, servo mode is
+                # up, and not mid-dump-trick - pending_dump's arrival check needs the
+                # arm to actually reach wait_xyz (within DEMO_DUMP_ARRIVAL_TOL_M, 3cm),
+                # which a 15cm-diameter orbit would only satisfy in passing. Every other
+                # idle tick (including the async return-to-wait leg right after a throw)
+                # gets it - servo_target already gets re-seeded to wait_xyz.copy() at
+                # each of those transitions above, so adding the offset here every tick
+                # is the entire mechanism; nothing upstream needs to know this exists.
+                # A throw starting overwrites servo_target itself (state != "idle" at
+                # that point), so the wobble stops being applied the same tick it commits
+                # - no separate stop/interrupt logic needed.
+                if args.idle_wobble and servo_mode and state == "idle" and not pending_dump:
+                    servo_target = wait_xyz + idle_wobble_offset(
+                        now_mono, args.idle_wobble_diameter, args.idle_wobble_period)
 
                 last_state = state
                 # Last thing in the loop so the setpoint reflects the newest
@@ -2449,6 +2814,29 @@ def main():
                 time.sleep(1.0 / args.poll_hz)
         except KeyboardInterrupt:
             stop_reason = "keyboard_interrupt"
+        except SystemExit as e:
+            # Catch-all for a SystemExit escaping from somewhere in the loop that
+            # wasn't given its own specific handler (like the two servo-reconnect
+            # sites above) - e.g. a future one, or a helper's own safety-clamp
+            # SystemExit (see ur_goto_raw.check_move_size). Never let this reach
+            # bare `python3 demo.py` uncaught: same 2026-07-27/2026-08-25 bug
+            # class either way - it skips straight past wrap_up_session() below,
+            # losing the session folder for the exact run whose logs matter most.
+            print(f"\n!!! uncaught SystemExit: {e}")
+            stop_reason = f"crashed: {e}"
+        except Exception as e:
+            # Catch-all crash guard (2026-08-25 user directive: "make it so even on
+            # not clean exit a new session appears in the folder"). Anything
+            # unexpected here - a real bug, a dropped NatNet/RTDE connection, etc -
+            # used to propagate straight out of main(), skipping wrap_up_session()
+            # entirely below and leaving that session's name/description prompt and
+            # (once re-enabled) robot log pull never run - exactly the session most
+            # worth having notes on. Print the full traceback (this is NOT silent -
+            # the bug still needs fixing) but fall through to the normal
+            # finally+wrap_up_session path instead of dying.
+            print(f"\n!!! unhandled exception in main loop - session ending abnormally:")
+            traceback.print_exc()
+            stop_reason = f"crashed: {type(e).__name__}: {e}"
         finally:
             print(f"\nstopping ({stop_reason or 'unknown'}) - sending stopl.")
             if attempts_ended:
@@ -2470,10 +2858,16 @@ def main():
                     send_script(stopl_script())
                 except Exception:
                     pass
-            client.stop_async()
-            rtde_r.disconnect()
-            dash.disconnect()
-            rec.close()
+            # Each wrapped individually and best-effort (2026-08-25, same crash-
+            # guard directive as above): one of these raising used to take out the
+            # rest of teardown AND skip wrap_up_session() below with it - a
+            # connection that's already dead (which is plausible exactly when the
+            # loop above crashed) shouldn't cost the session folder too.
+            for teardown_step in (client.stop_async, rtde_r.disconnect, dash.disconnect, rec.close):
+                try:
+                    teardown_step()
+                except Exception as e:
+                    print(f"  (teardown step {teardown_step.__qualname__} failed: {e})")
             if plot_window is not None:
                 # Deliberately not closed here - left open (already showing the last
                 # throw's plot, up to date as of its own update() call) so it's still

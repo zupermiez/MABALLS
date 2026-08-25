@@ -1739,3 +1739,187 @@ only, following this project's usual practice of shipping speed-cap changes
 as a default once judged safe by construction (movej's own per-joint clamp,
 here) rather than requiring a dry-run first for an incremental tuning change
 per the 2026-07-22 dry-run judgment call.
+
+## 2026-08-25 — throw_plot.py: light theme, linear side-view axis, mount frame
+
+Three changes to `throw_plot.py` (the live per-throw plot window), all
+user-requested in the same session:
+
+**Side panel: radial distance -> linear projection.** The right-hand panel
+used to plot `hypot(x, y)` (distance from the base) against height. User
+flagged this as unintuitive - a ball's radial distance from the base isn't
+monotonic along a roughly-straight flight path, so the plotted curve visibly
+folds back on itself near closest approach, reading as the trajectory
+"curving backward" even though the real motion doesn't. Fixed by projecting
+onto a fixed direction instead of taking a magnitude: `_forward(x, y,
+wait_az)` = `x*cos(wait_az) + y*sin(wait_az)`, a signed linear coordinate
+along the wait-pose azimuth (mirrors the top-down panel already being plain
+base X/Y, not a derived metric). Applied everywhere the old `_reach` values
+were used: ball path, arm TCP path, guess markers, event markers, wait-pose
+marker. Panel retitled "Side view (along approach direction - height)".
+
+**Light theme.** Swapped every dark-mode color constant (`PAGE_PLANE`,
+`CHART_SURFACE`, `INK_*`, `GRIDLINE`, `AXIS_LINE`, and the categorical
+identity colors `BALL_COLOR`/`ROBOT_COLOR`/`BASE_COLOR`/`GUESS_LINE_COLOR`/
+`STATUS_MISSED`) for the dataviz skill's validated light-mode steps of the
+same tokens/slots (`references/palette.md`) - same categorical hues, light
+column instead of dark. `STATUS_CAUGHT` (status "good") is unchanged - the
+status palette is fixed, not themed, same hex on both surfaces.
+
+**Mount frame added as static reference geometry.** User supplied real
+measurements for the aluminium frame the arm bolts to: 160cm long x 80cm
+wide, top surface 75cm above the floor, arm base center 52cm from the left
+rail (across the 80cm width) and 26cm from the back rail (along the 160cm
+length) - i.e. off-center in both dimensions, not centered. Base-frame z=0 is
+taken as the frame's top/mounting surface (UR base-frame origin convention),
+so the floor sits at z=-0.75 in base frame. Drawn as solid gray lines
+(`FRAME_COLOR = INK_SECONDARY`, solid) to read as a real structure, distinct
+from the dashed `ENVELOPE_COLOR` used for the abstract catch-envelope limits:
+a rotated rectangle outline on the top-down panel, a simple box down to the
+floor on the side panel (spanning the footprint's min/max projected extent).
+
+Orientation isn't independently known (only the two offset measurements were
+given), so it has to be inferred from something. First attempt: solve for
+the rotation that puts the wait pose exactly over the frame's centroid (the
+one directional hint given - "wait pose is about in center of frame").
+Problem found immediately on inspection: because the arm sits off-center in
+*both* dimensions (12cm off the width-center, 54cm off the length-center),
+the arm->centroid vector is diagonal in the frame's own local (rail-aligned)
+axes, not parallel to either rail. Forcing that diagonal vector to exactly
+match `wait_az` therefore rotates the rails themselves off the base X/Y
+axes - a visible ~9 degrees tilt in the top-down panel, confirmed by
+computing the rendered edge angle (170.9 degrees instead of a clean 180).
+User asked why; on inspection this looked like an artifact of over-literal
+constraint-solving rather than physical reality - frames like this are
+normally squared up with their long rails along the robot's main working
+direction, not installed rotated by ~9 degrees for no mechanical reason.
+Asked the user, who confirmed: **square the frame to `wait_az` instead**
+(`_mount_frame_corners_base_xy()` now rotates the local length axis
+(back->front) to align exactly with `wait_az`, full stop - no centroid
+solve). "Wait pose is about in the center" is now just an approximate
+description that happens to roughly hold, not an input to the rotation math.
+
+## 2026-08-25 — Ghost-marker point no longer drawn in live plots
+
+Follow-up to the ghost-marker false-miss fix earlier this session (`catch.py`'s
+`last_plausible_ball_sample`/`MAX_BALL_JUMP_M`, in the "Real bug found
+2026-08-25" comment block): that fix only corrected the post-hoc caught/miss
+distance heuristic. It never touched what actually gets *drawn* - the live
+per-throw plot (`throw_plot.py`, fed straight from `history_head.raw_samples`
+in both `catch.py` and `demo.py`) and `visualize_trajectory.py`'s real-time
+render loop (fed from `live_trajectory`'s live `flight_buffer`) both still
+plotted the frozen ghost point(s) at the tail whenever Motive latched onto one
+- user flagged this directly ("visualization often draws this point... always
+the same point").
+
+Fix: moved the jump-detection logic out of `catch.py` and into a shared
+`trajectory.trim_ghost_tail()` (+ `MAX_BALL_JUMP_M`, same 0.5m/frame
+threshold, now the single source of truth) - `trajectory.py` is already
+imported by every consumer that touches ball samples (`catch.py`, `demo.py`,
+`live_trajectory.py`, `visualize_trajectory.py`), so this was the natural
+shared home rather than a third copy-pasted implementation.
+`last_plausible_ball_sample()` in `catch.py`/`demo.py` is now a thin wrapper
+(`trim_ghost_tail(raw_samples)[-1]`). Applied at every point that draws a ball
+path:
+
+- `catch.py`/`demo.py`: the `ball_base`/`ball_t` arrays built for
+  `plot_window.update()` (`throw_plot.py`) are now built from
+  `trim_ghost_tail(history_head.raw_samples)`, not the raw list.
+- `visualize_trajectory.py`: `flight = trim_ghost_tail(list(s.flight_buffer))`
+  right where it's pulled off `SharedState` each render tick - trims live,
+  before the ball's own markers even come back, since the ghost point can
+  appear in `flight_buffer` while the flight is still nominally ongoing (flight
+  end is usually triggered by the ghost looking like "stopped", not before it).
+  Bonus: `step_prediction`/`capture_snapshots` take this same trimmed `flight`,
+  so the live prediction curve is protected from the ghost point too, not just
+  the drawn path.
+
+Deliberately NOT applied to: the raw `throw_samples` JSONL log (kept
+byte-for-real, unedited - that's the forensic ground truth the original ghost
+bug was even discovered from) or `track_ball.py` (explicitly a "raw tracking
+data sanity check" tool by its own docstring - filtering there would defeat
+its purpose). Also not spliced into `live_trajectory.py`'s actual
+release/flight-end state machine - the ghost point has only ever been observed
+after real flight has effectively ended, so it doesn't affect an in-flight
+catch decision, only what gets drawn/measured against afterward; this stays a
+display-only filter, same boundary the original fix drew.
+
+Added a self-test case to `trajectory.py`'s `__main__` block (`python3
+trajectory.py`): a clean synthetic flight passes through
+`trim_ghost_tail()` unchanged, and a flight with a frozen ghost point appended
+three times at the tail gets trimmed back to exactly the real samples.
+
+## 2026-08-25 — CATCH_MIN_REACH raised 0.45→0.55m after a near-self-collision
+
+Session `robot_logs/sessions/20260825_131516/` (`catch_log_20260825_131509.jsonl`,
+4 throws): user's own notes say "tested limits in the end had to estop threw it
+very close to base not sure if wouldve collided with itself but damn close."
+
+Checked whether the 0.45m reach floor (`check_catch_envelope`) actually held.
+Walked throw 4's ticks: the raw fit briefly predicted a catch point at
+reach=0.408m - well inside the old floor - but `check_catch_envelope()` refused
+it (no `retarget` event follows that tick; the servo stream just held its last
+valid setpoint). Checked every `servo_cmd` actually sent that throw: the closest
+was reach=0.4504m, a hair over the 0.45m floor, never under it. So the code-level
+gate was never actually breached - the near-collision the user saw was real, but
+the reach number wasn't lying to them the way a code bug would.
+
+What's actually going on: `check_catch_envelope`'s `reach` is
+`norm(target_xyz)` - a bare straight-line distance from the base origin to the
+commanded TCP *point*. It doesn't inflate for the box's own geometry
+(`box_radius` ~0.15m isn't subtracted/added anywhere in the check) and doesn't
+look at orientation at all - `tilt_follow`/`yaw_follow` can point the box back
+toward the arm's own links at a given XYZ without changing `reach`. So "0.45m of
+reach" was never a promise of 0.45m of physical clearance around the box or the
+arm's own body - just a distance-to-a-point check. That gap between the modeled
+quantity and the real risk is what let a code-correct session still look
+close enough to warrant an e-stop.
+
+Fix applied: `CATCH_MIN_REACH` 0.45 → 0.55m (`catch.py`, `demo.py`, and the
+mirrored constant in `ur_servo.py`'s `--bench` envelope test, which the code
+explicitly says to keep in sync by hand). Blunt, not geometric - still no
+swept-volume or orientation-aware self-collision check exists anywhere in this
+pipeline. 0.55m leaves the UR10's `DEFAULT_WAIT_POSE` (reach 0.641m) comfortably
+inside its own envelope, so this doesn't risk the wait pose rejecting itself.
+
+If this keeps happening at 0.55m, the next fix should model the box's actual
+swept geometry (radius + orientation), not just push the point-distance floor
+out further - see the `clamp_to_envelope`/`check_catch_envelope` docstrings for
+where that would need to plug in.
+
+## 2026-08-25 — Miss excuse moved from console to the plot window; scoreboard added
+
+Follow-up to `demo.py`'s `explain_miss()` (added earlier this session): it was
+printing its one-line "why we didn't catch that" to the console. User wanted
+it on the pop-up plot instead - the audience is looking at the plot, not a
+terminal - plus a running session catch tally visible on the same window.
+
+`throw_plot.py` (`ThrowPlotWindow`, shared by `catch.py`/`demo.py`):
+
+- **`excuse_text`**: a speech-bubble callout (rounded box, italic, curly-quoted)
+  between the title and the technical stats line. Colored to match the
+  title's status color (`_status()`), so it reads as "the same verdict, in
+  plain language" rather than a separate thing. Hidden (`set_visible(False)`)
+  whenever `meta["excuse"]` is falsy - a catch, or a plain `catch.py` session
+  that never populates the key at all (`meta.get("excuse")`, no KeyError).
+  Header layout shifted to make room: `subplots_adjust(top=...)` 0.86 -> 0.80,
+  stats_text 0.905 -> 0.855.
+- **`score_text`**: a persistent corner badge ("CATCHES N / M  (P%)"), top-
+  right, distinct rounded box with a `ROBOT_COLOR`-bordered accent so it reads
+  as the robot's own scoreboard. Fed by `meta["session_catches"]`/
+  `["session_attempts"]` - both scripts already track these locally
+  (`catches`/`attempts_ended`, used for the old console tally line), so this
+  was free to wire into both, not demo.py-only like the excuse itself.
+  Initialized to "CATCHES 0 / 0" at window construction so the badge chrome
+  is visible from the first frame, same idea as the title's own "waiting for
+  the first throw..." placeholder.
+
+`demo.py`: removed the two `print(f"    excuse for not getting catch: ...")`
+calls; `excuse` now flows into `plot_window.update()`'s `meta` dict and into
+`rec.log("throw_end", ..., excuse=excuse)` so it's still in the JSONL record
+even though it's no longer printed live.
+
+Verified headless (`MPLBACKEND=Agg`) with synthetic throws covering: a miss
+with an excuse (bubble visible, red-tinted), a catch right after (bubble
+hides, badge updates), and a bare `catch.py`-style meta with no `"excuse"`
+key at all (no crash, bubble stays hidden). Not yet run on a real session.

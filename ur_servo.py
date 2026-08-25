@@ -1131,7 +1131,7 @@ def _simulate_session(max_speed: float, max_accel: float, omega_max_deg: float,
     (not imported - ur_servo.py is imported BY catch.py, so the reverse would be
     circular; keep these in sync by hand if the real envelope changes).
     """
-    REACH_MIN, REACH_MAX = 0.45, 1.20
+    REACH_MIN, REACH_MAX = 0.55, 1.20  # 2026-08-25: raised 0.45->0.55, see catch.py CATCH_MIN_REACH
     Z_MIN, Z_MAX = -0.25, 0.55
 
     def reach_bounds(z):

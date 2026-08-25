@@ -86,6 +86,20 @@ volume, no base/tool rigid bodies, no frame registration (`calibrate_frames.py`)
 Nothing perception-driven in `catch.py` can run, not even `--dry-run`, until that's
 in place.
 
+**2026-08-25 update — this is stale, both blockers above are actually resolved.**
+Real throw sessions are running on the UR10 with OptiTrack live (`catch_log_2026
+0825_*.jsonl`, `wait_pose (0.1583, -0.5783, 0.2267, ...)`, `catch_envelope
+{reach_min: 0.45→0.55, reach_max: 1.2, z_min: 0.15, z_max: 1.2, max_azimuth_deg:
+75}` as of the most recent runs). `CATCH_MIN_REACH` raised 0.45→0.55m same day
+after a real near-self-collision requiring an e-stop — `check_catch_envelope()`
+held the old 0.45m floor exactly (nothing was ever actually commanded closer than
+0.4504m that session) but the arm still got uncomfortably close, because `reach`
+is a bare distance from the base origin to the commanded TCP point — it doesn't
+account for the box's own radius (~0.15m) or tool orientation, so 0.45m of
+"reach" wasn't 0.45m of real clearance. This section otherwise hasn't been
+reconciled with current state — treat the numbers just given as more current than
+the rest of this "Active work" block, not as a full rewrite of it.
+
 ## Hardware Reference
 
 ### Universal Robots UR12e (arm)

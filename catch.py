@@ -80,7 +80,7 @@ import rtde_receive
 from natnet import NatNetClient, DataFrame
 
 from live_trajectory import STATE_LOCK, SharedState, add_release_detection_args, make_handler
-from trajectory import AXIS_NAMES
+from trajectory import AXIS_NAMES, trim_ghost_tail
 from frames import mocap_point_to_base, quat_to_matrix, base_from_mocap_via_rigid_body
 from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script, movej_to_pose_script
 from calibrate_frames import send_urscript, set_tcp_script
@@ -113,7 +113,21 @@ from catch_feasibility import (
 # safe boundary between 0.37 and 0.538m is uncharacterized (no joint-angle telemetry
 # was logged for either the incident or the successes); this trades away that slice
 # of workspace rather than guess at it.
-CATCH_MIN_REACH = 0.45   # m from base - inside this is near-singular / too close to the body
+#
+# --- 2026-08-25: raised 0.45->0.55m, user directive after a real near-self-collision
+# on the UR10 (had to e-stop). That session (catch_logs/catch_log_20260825_131509.jsonl,
+# throw 4) never actually sent a target under 0.4504m - check_catch_envelope() held the
+# 0.45m floor exactly, refusing every retarget candidate below it (one predicted point
+# at 0.408m was rejected outright) - but the arm still got close enough to worry about.
+# Root cause: `reach` here is a bare distance from the base ORIGIN to the commanded TCP
+# point - it doesn't inflate for the box's own geometry (box_radius, ~0.15m) or account
+# for tool orientation (tilt/yaw-follow can point the box back toward the arm's own
+# links at a given XYZ), so 0.45m of "reach" did not translate to 0.45m of real
+# clearance. Raising the floor is a blunt fix for that gap, not a geometric one - still
+# no swept-volume/orientation-aware check exists. 0.55m stays well clear of
+# DEFAULT_WAIT_POSE's own reach on this arm (0.641m), so the wait pose can't reject
+# itself the way the 2026-07-15 note above once had to watch for.
+CATCH_MIN_REACH = 0.55   # m from base - inside this is near-singular / too close to the body
 CATCH_MAX_REACH = 1.20   # m from base - was 1.00; user directive 2026-07-15: attempt catches out to 1.20m
 # CATCH_Z_MIN raised -0.25->0.119 2026-07-27: a real collision (paint scraped off the
 # wrist3 housing against the base's mounting stand, C157A1 fault) was traced to a
@@ -125,7 +139,8 @@ CATCH_MAX_REACH = 1.20   # m from base - was 1.00; user directive 2026-07-15: at
 # danger mark (0.139 - 0.02 = 0.119), applied as a flat cutoff regardless of reach -
 # this trades away catching low throws far from the base (which were never actually
 # near the stand) for a much simpler, physically-grounded rule. CATCH_MIN_REACH left
-# at 0.45m per the same reasoning: it isn't what caused this incident.
+# unchanged per the same reasoning: it isn't what caused this incident (raised
+# separately, see the 2026-08-25 note above).
 #
 # --- 2026-08-24 UR10 (CB3) migration: overwritten in place for the new arm/location,
 # per user directive (git-recoverable, not branched - see docs/ur10_migration_roadmap.md).
@@ -346,30 +361,22 @@ def _verdict(r) -> str:
 # (-0.709, 0.203, -0.467 mocap, both throws, within a few mm) instead of
 # continuing the ball's smooth path - so the caught/miss heuristic below,
 # which trusted raw_samples[-1] outright, measured "ball last seen" against a
-# ghost point and logged a false miss on two good catches. A real ball at
-# 120Hz never moves >MAX_BALL_JUMP_M in one frame even at speeds far above
-# anything thrown here - so trim any trailing run introduced by a jump that
-# large instead of trusting the literal last sample.
-MAX_BALL_JUMP_M = 0.5
+# ghost point and logged a false miss on two good catches. Ghost-tail
+# detection itself now lives in trajectory.trim_ghost_tail() (imported above,
+# with its MAX_BALL_JUMP_M threshold) - shared with demo.py,
+# visualize_trajectory.py, and anything else that draws or measures against a
+# sample buffer's tail.
 
 
 def last_plausible_ball_sample(raw_samples: list):
     """Return the raw_samples entry to trust as "where the ball was last seen" -
     the true last sample, unless an implausible single-frame jump (see
-    MAX_BALL_JUMP_M above) occurred somewhere in the tail, in which case
+    trajectory.trim_ghost_tail) occurred somewhere in the tail, in which case
     return the sample right before the most recent such jump instead of the
     ghost point(s) after it. No-op (returns raw_samples[-1]) on a normal,
     continuously-tracked flight."""
-    if not raw_samples:
-        return None
-    trusted_idx = len(raw_samples) - 1
-    for i in range(len(raw_samples) - 1, 0, -1):
-        a, b = raw_samples[i - 1], raw_samples[i]
-        jump = math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2)
-        if jump > MAX_BALL_JUMP_M:
-            trusted_idx = i - 1
-            break
-    return raw_samples[trusted_idx]
+    trimmed = trim_ghost_tail(raw_samples)
+    return trimmed[-1] if trimmed else None
 
 
 def stopl_script(decel: float = 3.0) -> str:
@@ -527,11 +534,11 @@ def check_catch_envelope(target_xyz: np.ndarray, wait_xyz: Optional[np.ndarray] 
 def clamp_to_envelope(p: np.ndarray, margin: float = 0.0) -> np.ndarray:
     """Project a point into the catch envelope's reach and z bands.
 
-    Exists because the envelope is NOT CONVEX: it is an annulus (reach 0.45-1.20m)
+    Exists because the envelope is NOT CONVEX: it is an annulus (reach 0.55-1.20m)
     intersected with a z band and an azimuth wedge, so a straight line between two
     perfectly valid points can leave it. Concretely, sweeping the setpoint from the
     wait pose (reach 0.73m) to a low-reach side target cuts the corner and dips
-    under the 0.45m inner bound partway across.
+    under the 0.55m inner bound partway across.
 
     That matters only for streaming. A discrete movel/movej is checked once, at its
     endpoint, and the controller owns the path in between; a servo setpoint IS the
@@ -2244,17 +2251,23 @@ def main():
                         rec.log("throw_samples", t=history_head.raw_samples[0].t,
                                 raw=[[s.t, s.x, s.y, s.z] for s in history_head.raw_samples])
                     if plot_window is not None and history_head is not None and history_head.raw_samples:
+                        # Trimmed, not raw: a ghost-marker tail (see trim_ghost_tail's
+                        # docstring) is real, unedited data and belongs in the JSONL log
+                        # above, but has no business being drawn as part of the ball's
+                        # path - it isn't where the ball went.
+                        plot_samples = trim_ghost_tail(history_head.raw_samples)
                         ball_base = np.array([
                             mocap_point_to_base(np.array([s.x, s.y, s.z]), R, t_vec)
-                            for s in history_head.raw_samples
+                            for s in plot_samples
                         ])
-                        ball_t = np.array([s.t for s in history_head.raw_samples])
+                        ball_t = np.array([s.t for s in plot_samples])
                         plot_window.update(
                             rec.throw, ball_base, ball_t, throw_tcp_trace, throw_guesses,
                             meta=dict(attempted=attempted, caught_guess=caught_guess,
                                      ball_last_dist_m=ball_last_dist, duration=history_head.duration,
                                      samples=history_head.samples, catch_move=args.catch_move,
-                                     dry_run=args.dry_run, reason=history_head.reason),
+                                     dry_run=args.dry_run, reason=history_head.reason,
+                                     session_catches=catches, session_attempts=attempts_ended),
                         )
                     if servo_mode:
                         # Just re-aim the stream at the wait pose - no blocking movej,

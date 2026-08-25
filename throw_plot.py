@@ -70,28 +70,62 @@ from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 import numpy as np
 
-# Dark theme (2026-07-27): chart chrome/ink pulled from the dataviz skill's
-# validated dark-mode tokens (references/palette.md), not eyeballed - surfaces,
-# ink, and gridline all come from the same "Chart chrome & ink" dark column.
-PAGE_PLANE = "#0d0d0d"        # figure background - near-black, not pure #000 (validated token)
-CHART_SURFACE = "#1a1a19"     # axes panel background, one step off the page for separation
-INK_PRIMARY = "#ffffff"
-INK_SECONDARY = "#c3c2b7"
+# Light theme (2026-08-25, replacing the earlier dark theme): chart chrome/ink
+# pulled from the dataviz skill's validated light-mode tokens (references/
+# palette.md), not eyeballed - surfaces, ink, and gridline all come from the
+# same "Chart chrome & ink" light column; categorical marks use each slot's
+# light step instead of its dark step.
+PAGE_PLANE = "#f9f9f7"        # figure background (validated token)
+CHART_SURFACE = "#fcfcfb"     # axes panel background, one step off the page for separation
+INK_PRIMARY = "#0b0b0b"
+INK_SECONDARY = "#52514e"
 INK_MUTED = "#898781"         # axis/tick labels - same value in both modes by design
-GRIDLINE = "#2c2c2a"
-AXIS_LINE = "#383835"
+GRIDLINE = "#e1e0d9"
+AXIS_LINE = "#c3c2b7"
 
-BALL_COLOR = "#3987e5"        # categorical slot 1 (blue), dark step - ball start/end marker identity
-ROBOT_COLOR = "#199e70"       # categorical slot 3 (aqua), dark step - arm TCP end marker identity
+BALL_COLOR = "#2a78d6"        # categorical slot 1 (blue), light step - ball start/end marker identity
+ROBOT_COLOR = "#1baf7a"       # categorical slot 3 (aqua), light step - arm TCP end marker identity
 ENVELOPE_COLOR = INK_MUTED    # reference geometry, not data - muted so it recedes behind real data
 WAIT_COLOR = INK_MUTED
-BASE_COLOR = "#9085e9"        # categorical slot 7 (violet), dark step - needs to pop against black, not sink into it
-GUESS_LINE_COLOR = "#d95926"  # categorical slot 2 (orange), dark step - connector between predicted catch-point guesses
+BASE_COLOR = "#4a3aa7"        # categorical slot 7 (violet), light step
+GUESS_LINE_COLOR = "#eb6834"  # categorical slot 2 (orange), light step - connector between predicted catch-point guesses
 NEUTRAL_INK = INK_SECONDARY   # legend swatches for line *style* (color there varies per-throw for real data)
 
-STATUS_CAUGHT = "#0ca30c"     # dark-mode "good" (5.19:1 on #1a1a19)
-STATUS_MISSED = "#e66767"     # categorical slot 8 (red), dark step - brighter than the light-mode critical red, needed on black
+STATUS_CAUGHT = "#0ca30c"     # status "good" - fixed hex, same on both surfaces (3.27:1 on light)
+STATUS_MISSED = "#e34948"     # categorical slot 8 (red), light step
 STATUS_NEUTRAL = INK_MUTED
+FRAME_COLOR = INK_SECONDARY   # solid gray for the physical mount frame - distinct from the
+                               # dashed, lighter ENVELOPE_COLOR so a real structure doesn't
+                               # read as an abstract limit
+
+# Aluminium arm-mount frame (2026-08-25, user-supplied measurements): a rectangular
+# frame the arm bolts to, floor-standing. Two "rails" run the 160cm length (left/
+# right, 80cm apart); two run the 80cm width (front/back, 160cm apart). The arm base
+# center sits inside this footprint, off-center, at the given offsets from the left
+# and back rails - NOT at the frame's own center. Orientation in the base frame isn't
+# separately known, so the frame is squared to the wait-pose azimuth (self.wait_az):
+# the length rails (back->front) run exactly along it, matching how a frame like this
+# is actually installed - square to the robot's working direction, not rotated to
+# force an exact centroid hit. (An earlier version instead solved for the rotation
+# that put the wait pose exactly over the frame's centroid; the arm's off-center
+# mounting made that centroid direction diagonal in the frame's own local axes, so
+# forcing it to match wait_az visibly tilted the rails - see docs/debug_log.md.)
+# See _mount_frame_corners_base_xy().
+MOUNT_FRAME_LENGTH_M = 1.60          # long rails (left/right)
+MOUNT_FRAME_WIDTH_M = 0.80           # short rails (front/back)
+MOUNT_FRAME_HEIGHT_M = 0.75          # frame top above the floor
+MOUNT_ARM_FROM_LEFT_M = 0.52         # arm base center, across the width, from the left rail
+MOUNT_ARM_FROM_BACK_M = 0.26         # arm base center, along the length, from the back rail
+
+# The physical cardboard catch box mounted on the tool (2026-08-25 user
+# measurement, replacing the earlier reach/z "catch envelope" rectangle that
+# used to occupy this spot on the side panel - that rectangle was the arm's
+# abstract feasibility limits, not the box, and was mislabeled as one).
+# Side-view profile only (what the box looks like face-on in ax_side):
+# BOX_WIDTH_M along the approach direction, BOX_HEIGHT_M vertically - centered
+# on the wait pose, since that's where the box sits at rest.
+BOX_WIDTH_M = 0.15
+BOX_HEIGHT_M = 0.13
 
 # Single perceptual ramp shared by the ball path, arm path, and every decision
 # marker: purple (release) -> magenta/red -> orange -> yellow (impact). Fixed
@@ -105,6 +139,43 @@ TIME_NORM = Normalize(vmin=0.0, vmax=1.0)
 def _circle(radius: float, n: int = 100) -> Tuple[np.ndarray, np.ndarray]:
     theta = np.linspace(0, 2 * np.pi, n)
     return radius * np.cos(theta), radius * np.sin(theta)
+
+
+def _forward(x, y, wait_az: float):
+    """Signed distance along the wait-pose azimuth direction, for the ax_side
+    panel. A linear projection (x*cos+y*sin), not radial distance
+    (hypot(x,y)) - radial distance folds a ball's path back on itself
+    whenever it passes near the base's vertical axis, which reads as the
+    trajectory "curving backward" even though the underlying motion is a
+    straight-ish line. This stays linear, so ax_side shows a real,
+    unfolded view of the throw instead of a derived reach metric."""
+    return x * np.cos(wait_az) + y * np.sin(wait_az)
+
+
+def _mount_frame_corners_base_xy(wait_az: float) -> np.ndarray:
+    """4 corners of the aluminium mount frame's footprint, in base-frame X,Y
+    (meters), with the arm base at the origin - order: left-back, right-back,
+    right-front, left-front (closed by re-adding corner 0 at draw time).
+
+    2026-08-25: squared to wait_az (see the module comment above this
+    function for the earlier centroid-solve attempt this replaced). User
+    flagged that as still visibly tilted in the top-down plot - wait_az
+    isn't exactly -90 degrees, so squaring to it left a few degrees of tilt.
+    Squared to straight down (base -Y, azimuth -90 degrees) instead - `wait_az`
+    is kept as a parameter (still used elsewhere in this file) but no longer
+    drives this rotation."""
+    arm_local = np.array([MOUNT_ARM_FROM_LEFT_M, MOUNT_ARM_FROM_BACK_M])
+    straight_down_az = -np.pi / 2
+    theta = straight_down_az - np.pi / 2  # local +length axis (0, 1) -> straight down
+    c, s = np.cos(theta), np.sin(theta)
+    rot = np.array([[c, -s], [s, c]])
+    corners_local = np.array([
+        [0.0, 0.0],
+        [MOUNT_FRAME_WIDTH_M, 0.0],
+        [MOUNT_FRAME_WIDTH_M, MOUNT_FRAME_LENGTH_M],
+        [0.0, MOUNT_FRAME_LENGTH_M],
+    ])
+    return (corners_local - arm_local) @ rot.T
 
 
 def _status(meta: Dict) -> Tuple[str, str]:
@@ -172,7 +243,7 @@ class ThrowPlotWindow:
         self.fig.patch.set_facecolor(PAGE_PLANE)
         self.fig.canvas.mpl_connect("close_event", self._on_close)
         self.fig.canvas.manager.set_window_title("catch.py - throw plot")
-        self.fig.subplots_adjust(top=0.86, bottom=0.03)
+        self.fig.subplots_adjust(top=0.80, bottom=0.03)
         gs = self.fig.add_gridspec(2, 2, height_ratios=[10, 2], hspace=0.32, wspace=0.28)
         self.ax_top = self.fig.add_subplot(gs[0, 0])
         self.ax_side = self.fig.add_subplot(gs[0, 1])
@@ -184,9 +255,9 @@ class ThrowPlotWindow:
         self.ax_top.set_xlabel("x (m)")
         self.ax_top.set_ylabel("y (m)")
         self.ax_top.set_aspect("equal", adjustable="datalim")
-        self.ax_side.set_title("Reach profile (radial distance – height)", color=INK_PRIMARY,
+        self.ax_side.set_title("Side view (along approach direction – height)", color=INK_PRIMARY,
                                family="monospace", fontsize=10)
-        self.ax_side.set_xlabel("distance from base (m)")
+        self.ax_side.set_xlabel("distance from base, along wait-pose direction (m)")
         self.ax_side.set_ylabel("z (m, base frame)")
         # Equal aspect on ax_side too (ax_top already had it) - without this the
         # envelope rectangle (a real 0.75m-reach x 0.43m-tall box) gets stretched
@@ -211,14 +282,42 @@ class ThrowPlotWindow:
         self.title_text = self.fig.suptitle("catch.py — waiting for the first throw...",
                                             color=STATUS_NEUTRAL, fontsize=13, fontweight="bold",
                                             family="monospace", y=0.975)
-        self.stats_text = self.fig.text(0.5, 0.905, "", ha="center", va="top", fontsize=8,
+
+        # Excuse callout (demo.py's explain_miss(), 2026-08-25): a plain-language
+        # "why not" for the audience, replacing the console print it started as -
+        # a pop-up window is what the audience is actually looking at, so that's
+        # where the line belongs. Speech-bubble styling (rounded box, italic,
+        # quoted) reads as commentary distinct from the technical title/stats
+        # lines around it. Hidden (set_visible(False) in update()) whenever
+        # there's nothing to say - a catch, or a plain catch.py session that
+        # never populates meta["excuse"] at all.
+        self.excuse_text = self.fig.text(0.5, 0.90, "", ha="center", va="top", fontsize=11.5,
+                                         family="sans-serif", style="italic", color=INK_PRIMARY,
+                                         wrap=True,
+                                         bbox=dict(boxstyle="round,pad=0.5", facecolor=CHART_SURFACE,
+                                                  edgecolor=AXIS_LINE, linewidth=1))
+        self.excuse_text.set_visible(False)
+
+        # Session scoreboard (2026-08-25): a persistent running tally, not a
+        # per-throw stat, so it lives in its own corner badge rather than the
+        # stats line that gets fully overwritten every throw. Text set once
+        # here so the badge chrome is visible even before the first throw
+        # resolves, same "the UI already looks finished at startup" idea as
+        # the title's own "waiting for the first throw..." placeholder.
+        self.score_text = self.fig.text(0.985, 0.94, "CATCHES  0 / 0", ha="right", va="top",
+                                        fontsize=11, family="monospace", fontweight="bold",
+                                        color=INK_PRIMARY,
+                                        bbox=dict(boxstyle="round,pad=0.45", facecolor=CHART_SURFACE,
+                                                 edgecolor=ROBOT_COLOR, linewidth=1.4))
+
+        self.stats_text = self.fig.text(0.5, 0.855, "", ha="center", va="top", fontsize=8,
                                         family="monospace", color=INK_SECONDARY)
 
         # --- static geometry (catch envelope, wait pose, base) - drawn once, ---
         # --- never touched again: these don't change throw to throw. ---
         reach_min, reach_max = envelope["reach_min"], envelope["reach_max"]
-        z_min, z_max = envelope["z_min"], envelope["z_max"]
         wait_az = float(np.arctan2(self.wait_xyz[1], self.wait_xyz[0]))
+        self.wait_az = wait_az  # reused in update() to project x,y onto this direction for ax_side
         az_span = np.radians(envelope.get("max_azimuth_deg", 75.0))
         cx_min, cy_min = _circle(reach_min)
         cx_max, cy_max = _circle(reach_max)
@@ -230,11 +329,30 @@ class ThrowPlotWindow:
                              ":", color=ENVELOPE_COLOR, linewidth=1, zorder=1)
         self.ax_top.plot(0, 0, "^", color=BASE_COLOR, markersize=10, zorder=6)
         self.ax_top.plot(self.wait_xyz[0], self.wait_xyz[1], "s", color=WAIT_COLOR, markersize=8, zorder=6)
-        self.ax_side.add_patch(plt.Rectangle((reach_min, z_min), reach_max - reach_min, z_max - z_min,
-                                             fill=False, linestyle="--", edgecolor=ENVELOPE_COLOR,
-                                             linewidth=1, zorder=1))
-        wait_reach = float(np.hypot(self.wait_xyz[0], self.wait_xyz[1]))
-        self.ax_side.plot(wait_reach, self.wait_xyz[2], "s", color=WAIT_COLOR, markersize=8, zorder=6)
+        wait_fwd = _forward(self.wait_xyz[0], self.wait_xyz[1], wait_az)
+        # The box (see BOX_WIDTH_M/BOX_HEIGHT_M above) - solid, not dashed, same
+        # "real physical structure" treatment as the mount frame below, centered
+        # on the wait pose since that's where it sits at rest.
+        self.ax_side.add_patch(plt.Rectangle(
+            (wait_fwd - BOX_WIDTH_M / 2, self.wait_xyz[2] - BOX_HEIGHT_M / 2),
+            BOX_WIDTH_M, BOX_HEIGHT_M,
+            fill=False, linestyle="-", edgecolor=FRAME_COLOR, linewidth=1.3, zorder=1))
+        self.ax_side.plot(wait_fwd, self.wait_xyz[2], "s", color=WAIT_COLOR, markersize=8, zorder=6)
+
+        # Mount frame - real aluminium structure the arm bolts to, not a derived
+        # limit, so solid FRAME_COLOR rather than envelope's dashed ENVELOPE_COLOR.
+        # Base-frame z=0 is the mounting surface (frame top) by UR convention, so
+        # the floor is at z=-MOUNT_FRAME_HEIGHT_M.
+        frame_corners = _mount_frame_corners_base_xy(wait_az)
+        fx = np.append(frame_corners[:, 0], frame_corners[0, 0])
+        fy = np.append(frame_corners[:, 1], frame_corners[0, 1])
+        self.ax_top.plot(fx, fy, "-", color=FRAME_COLOR, linewidth=1.3, zorder=1)
+        frame_fwd = _forward(frame_corners[:, 0], frame_corners[:, 1], wait_az)
+        floor_z = -MOUNT_FRAME_HEIGHT_M
+        self.ax_side.add_patch(plt.Rectangle((frame_fwd.min(), floor_z),
+                                             frame_fwd.max() - frame_fwd.min(), MOUNT_FRAME_HEIGHT_M,
+                                             fill=False, linestyle="-", edgecolor=FRAME_COLOR,
+                                             linewidth=1.3, zorder=1))
 
         # --- dynamic artists, pre-allocated once, mutated every update() ---
         # Ball and arm paths are LineCollections (not Line2D) so each segment can
@@ -352,6 +470,8 @@ class ThrowPlotWindow:
             Line2D([0], [0], marker="s", color="none", markerfacecolor=WAIT_COLOR, markersize=8, label="wait pose"),
             Line2D([0], [0], marker="^", color="none", markerfacecolor=BASE_COLOR, markersize=8, label="robot base"),
             Line2D([0], [0], color=ENVELOPE_COLOR, lw=1, ls="--", label="catch envelope"),
+            Line2D([0], [0], color=FRAME_COLOR, lw=1.3, ls="-", label="box (side view, at wait pose)"),
+            Line2D([0], [0], color=FRAME_COLOR, lw=1.3, ls="-", label="mount frame (aluminium, to floor)"),
         ]
         ax_legend.legend(handles=handles, loc="center", ncol=4, labelcolor=INK_SECONDARY,
                         frameon=False, fontsize=8, handlelength=1.8, columnspacing=1.3, labelspacing=1.1)
@@ -404,6 +524,21 @@ class ThrowPlotWindow:
         self.title_text.set_text(f"Throw #{throw_no} — {status_label}")
         self.title_text.set_color(status_color)
 
+        excuse = meta.get("excuse")
+        if excuse:
+            self.excuse_text.set_text(f"Excuse for not getting the ball: {excuse}")
+            self.excuse_text.set_color(status_color)
+            self.excuse_text.get_bbox_patch().set_edgecolor(status_color)
+            self.excuse_text.set_visible(True)
+        else:
+            self.excuse_text.set_visible(False)
+
+        session_catches = meta.get("session_catches")
+        session_attempts = meta.get("session_attempts")
+        if session_catches is not None and session_attempts is not None:
+            pct = f"  ({100 * session_catches / session_attempts:.0f}%)" if session_attempts else ""
+            self.score_text.set_text(f"CATCHES  {session_catches} / {session_attempts}{pct}")
+
         commit_note = ""
         commits = [g for g in guesses if g.get("kind") == "commit"]
         if commits and len(fracs) and len(ball_t) >= 2:
@@ -418,9 +553,9 @@ class ThrowPlotWindow:
 
         if len(ball_base):
             bx, by, bz = ball_base[:, 0], ball_base[:, 1], ball_base[:, 2]
-            b_reach = np.hypot(bx, by)
+            b_fwd = _forward(bx, by, self.wait_az)
             seg_colors = fracs[:-1] if len(fracs) > 1 else np.zeros(0)
-            top_segs, side_segs = _segments(bx, by), _segments(b_reach, bz)
+            top_segs, side_segs = _segments(bx, by), _segments(b_fwd, bz)
             for line in (self.ball_line_top, self.ball_glow_top):
                 line.set_segments(top_segs)
                 line.set_array(seg_colors)
@@ -429,8 +564,8 @@ class ThrowPlotWindow:
                 line.set_array(seg_colors)
             self.ball_top_start.set_data([bx[0]], [by[0]])
             self.ball_top_end.set_data([bx[-1]], [by[-1]])
-            self.ball_side_start.set_data([b_reach[0]], [bz[0]])
-            self.ball_side_end.set_data([b_reach[-1]], [bz[-1]])
+            self.ball_side_start.set_data([b_fwd[0]], [bz[0]])
+            self.ball_side_end.set_data([b_fwd[-1]], [bz[-1]])
         else:
             for line in (self.ball_line_top, self.ball_glow_top, self.ball_line_side, self.ball_glow_side):
                 line.set_segments(np.empty((0, 2, 2)))
@@ -443,9 +578,9 @@ class ThrowPlotWindow:
             tcp_xyz = np.array([p for _n, p in tcp_trace], dtype=float)
             tcp_fracs = np.array([_n_to_frac(n, fracs) for n, _p in tcp_trace])
             tx, ty, tz = tcp_xyz[:, 0], tcp_xyz[:, 1], tcp_xyz[:, 2]
-            t_reach = np.hypot(tx, ty)
+            t_fwd = _forward(tx, ty, self.wait_az)
             arm_seg_colors = tcp_fracs[:-1] if len(tcp_fracs) > 1 else np.zeros(0)
-            arm_top_segs, arm_side_segs = _segments(tx, ty), _segments(t_reach, tz)
+            arm_top_segs, arm_side_segs = _segments(tx, ty), _segments(t_fwd, tz)
             for line in (self.arm_line_top, self.arm_glow_top):
                 line.set_segments(arm_top_segs)
                 line.set_array(arm_seg_colors)
@@ -453,7 +588,7 @@ class ThrowPlotWindow:
                 line.set_segments(arm_side_segs)
                 line.set_array(arm_seg_colors)
             self.arm_top_end.set_data([tx[-1]], [ty[-1]])
-            self.arm_side_end.set_data([t_reach[-1]], [tz[-1]])
+            self.arm_side_end.set_data([t_fwd[-1]], [tz[-1]])
         else:
             for line in (self.arm_line_top, self.arm_glow_top, self.arm_line_side, self.arm_glow_side):
                 line.set_segments(np.empty((0, 2, 2)))
@@ -465,25 +600,25 @@ class ThrowPlotWindow:
             gxyz = np.array([g["point"] for g in guesses], dtype=float)
             g_fracs = np.array([_n_to_frac(g["n"], fracs) for g in guesses])
             gx, gy, gz = gxyz[:, 0], gxyz[:, 1], gxyz[:, 2]
-            g_reach = np.hypot(gx, gy)
+            g_fwd = _forward(gx, gy, self.wait_az)
             self.guess_line_top.set_data(gx, gy)
-            self.guess_line_side.set_data(g_reach, gz)
+            self.guess_line_side.set_data(g_fwd, gz)
             self.guess_scat_top.set_offsets(np.column_stack([gx, gy]))
             self.guess_scat_top.set_array(g_fracs)
-            self.guess_scat_side.set_offsets(np.column_stack([g_reach, gz]))
+            self.guess_scat_side.set_offsets(np.column_stack([g_fwd, gz]))
             self.guess_scat_side.set_array(g_fracs)
             self.guess_star_top.set_data([gx[-1]], [gy[-1]])
-            self.guess_star_side.set_data([g_reach[-1]], [gz[-1]])
+            self.guess_star_side.set_data([g_fwd[-1]], [gz[-1]])
 
             if len(ball_base):
                 idxs = np.clip(np.array([g["n"] for g in guesses], dtype=int) - 1, 0, len(ball_base) - 1)
                 ex, ey, ez = ball_base[idxs, 0], ball_base[idxs, 1], ball_base[idxs, 2]
-                e_reach = np.hypot(ex, ey)
+                e_fwd = _forward(ex, ey, self.wait_az)
                 sizes = np.array([130 if g.get("kind") == "commit" else 55 for g in guesses])
                 self.event_scat_top.set_offsets(np.column_stack([ex, ey]))
                 self.event_scat_top.set_array(g_fracs)
                 self.event_scat_top.set_sizes(sizes)
-                self.event_scat_side.set_offsets(np.column_stack([e_reach, ez]))
+                self.event_scat_side.set_offsets(np.column_stack([e_fwd, ez]))
                 self.event_scat_side.set_array(g_fracs)
                 self.event_scat_side.set_sizes(sizes)
             else:
@@ -509,6 +644,20 @@ class ThrowPlotWindow:
             for artist in collections:
                 ax.update_datalim(artist.get_datalim(ax.transData))
             ax.autoscale_view()
+
+        # ax_top's catch-envelope wedge (circles + azimuth rays) is symmetric
+        # left-right about the base origin's x=0 line by construction, but a
+        # lopsided throw (release point far off to one side) pulls autoscale's x
+        # range unevenly, making the wedge look off-center even though it isn't.
+        # Re-center x on 0 (keep the same span, just balanced) - doesn't clip
+        # anything, just repositions the same view. Only x needs this: y doesn't
+        # need to be symmetric for the wedge to look symmetric, and forcing both
+        # fights the equal-aspect autoscaling above (ax.set_aspect("equal",
+        # adjustable="datalim") recomputes y from x's span on its own at draw
+        # time - setting y explicitly here just gets silently overridden anyway).
+        xlim = self.ax_top.get_xlim()
+        rx = max(abs(xlim[0]), abs(xlim[1]))
+        self.ax_top.set_xlim(-rx, rx)
 
         try:
             self.fig.canvas.draw_idle()

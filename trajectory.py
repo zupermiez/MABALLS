@@ -16,6 +16,7 @@ and ~0 on the other two; if it doesn't, something's wrong (bad samples, ball not
 actually in free flight, wrong units, etc).
 """
 
+import math
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
@@ -31,6 +32,58 @@ class Sample:
     x: float
     y: float
     z: float
+
+
+# Motive "ghost marker" filter (2026-08-25, found via catch.py's forensic log
+# analysis - see docs/debug_log.md 2026-08-25). Motive's rigid-body solver can
+# briefly latch onto a stray reflective point once the ball's own markers are
+# occluded (typically entering the catch box at the end of a real flight), and
+# keeps reporting tracking_valid=True while frozen at that point - not the
+# already-documented "never sighted this session" (0,0,0)+identity default,
+# but a *different*, arbitrary, environment-specific fixed point (one real
+# session saw two throws both end with a jump to the same frozen mocap point,
+# within a few mm, well away from the ball's actual path). Any consumer that
+# trusts the tail of a sample buffer at face value - a post-hoc "where was the
+# ball last seen" check, or a live plot drawing the buffer as it grows - draws
+# or measures against that ghost point instead of the real trajectory.
+#
+# A real ball at 120fps never moves more than this in one frame, even well
+# above any speed thrown here, so any single-frame jump past it is Motive's
+# solver re-latching onto something else, not real motion.
+MAX_BALL_JUMP_M = 0.5
+
+
+def trim_ghost_tail(samples: Sequence[Sample], max_jump_m: float = MAX_BALL_JUMP_M) -> List[Sample]:
+    """Return `samples` with any trailing ghost-marker run trimmed off - the
+    prefix up to and including the last sample before the most recent
+    implausible single-frame jump (see MAX_BALL_JUMP_M), or every sample
+    unchanged if no such jump exists anywhere in the tail.
+
+    Deliberately a *display/post-hoc* filter, not something to splice into
+    live release/flight-end detection: the ghost point only ever shows up
+    after real flight has effectively ended (markers occluded), so it never
+    affects an in-flight catch decision - only what gets drawn or measured
+    against afterward. Callers that need the raw, unfiltered buffer (e.g. the
+    JSONL trajectory dump `catch.py`/`demo.py` write for later forensic
+    research - the ghost point itself was found by looking at that raw data)
+    should keep using the untrimmed samples; this is only for what a human
+    looks at live.
+
+    Only trims a trailing run, on purpose: the only observed cause (marker
+    occlusion at the end of flight, once the ball is caught/landed) only ever
+    produces a tail artifact, so a single backward scan for the last
+    disqualifying jump is enough - no need to hunt for jumps buried mid-flight.
+    """
+    if not samples:
+        return []
+    trusted_idx = len(samples) - 1
+    for i in range(len(samples) - 1, 0, -1):
+        a, b = samples[i - 1], samples[i]
+        jump = math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2)
+        if jump > max_jump_m:
+            trusted_idx = i - 1
+            break
+    return list(samples[: trusted_idx + 1])
 
 
 @dataclass
@@ -144,4 +197,17 @@ if __name__ == "__main__":
     assert fit.up_axis == 1, "expected y to be identified as the up axis"
     assert fit.residual_rms < 0.01, "fit residual too large"
     assert catch_t is not None
+
+    # trim_ghost_tail: a clean flight is returned unchanged; a flight whose tail
+    # instantaneously jumps to a frozen ghost point and stays there is trimmed
+    # back to the last real sample before the jump.
+    trimmed_clean = trim_ghost_tail(samples)
+    assert trimmed_clean == samples, "clean flight should pass through unchanged"
+
+    ghost = Sample(t=samples[-1].t + 1 / fps, x=5.0, y=5.0, z=5.0)  # far from real path
+    haunted = samples + [ghost, ghost, ghost]  # solver latches on and stays there
+    trimmed = trim_ghost_tail(haunted)
+    assert trimmed == samples, "ghost tail should be trimmed back to the real samples"
+    print("trim_ghost_tail: clean flight preserved, ghost tail trimmed")
+
     print("\nself-test passed")
