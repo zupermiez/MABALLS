@@ -162,12 +162,25 @@ CATCH_Z_MAX = CATCH_MAX_REACH  # m base-frame - effectively uncapped, see 2026-0
 # user directive - only the reach/z band above now bounds a catch target, so any target
 # within CATCH_MAX_REACH is attempted regardless of distance from the wait pose.
 
+# Robot-side watchdog for demo.py's own stream, deliberately a bit larger than
+# ur_servo.DEFAULT_SOCK_TIMEOUT (0.3s) - NOT a change to that shared library
+# default (other scripts still get 0.3s). 2026-08-26 real incident: a single
+# slow tick anywhere in this loop (a blocking Dashboard Server round-trip is
+# the leading suspect - see check_safety_mode()'s call site) exceeded 0.3s
+# while the robot was never actually faulted, tripping the robot-side watchdog
+# and silently ending its program with no fault ever recorded. This buys the
+# host more slack against exactly that kind of one-off stall without touching
+# fault-detection cadence (SAFETY_CHECK_MIN_INTERVAL_S, deliberately unchanged
+# - see its own comment) or weakening the actual host-crash protection much:
+# a genuinely dead host is still caught within half a second.
+DEMO_SOCK_TIMEOUT_S = 0.5
+
 # A servo_hold (see emit_setpoint) that outlives this is worth escalating loudly: it
 # means the limiter's own reach/z braking isn't resolving the violation on its own tick
 # over tick, which is exactly the silent-stall shape of the 2026-07-27 incident. Same
-# duration as ur_servo.DEFAULT_SOCK_TIMEOUT - by then it's taken as long as plain
+# duration as DEMO_SOCK_TIMEOUT_S - by then it's taken as long as plain
 # silence would need to kill the setpoint stream outright.
-SERVO_HOLD_STUCK_S = DEFAULT_SOCK_TIMEOUT
+SERVO_HOLD_STUCK_S = DEMO_SOCK_TIMEOUT_S
 
 # Chase-abort (2026-07-27): a committed throw whose feasibility margin stays negative
 # and keeps failing to improve, tick over tick, is one that was never catchable - the
@@ -248,6 +261,17 @@ SERVO_BASE_RATE_DEG_S = 110.0
 # second. Capping it at 50Hz keeps the existing behaviour identical at the old poll
 # rate while stopping it from scaling with the servo rate.
 SAFETY_CHECK_MIN_INTERVAL_S = 0.02
+
+# 2026-08-26: a servo stream can die from a plain send failure (robot-side watchdog
+# ended its own program) with NO safety-mode fault ever surfacing - the fault-clear
+# branch above is the only thing that reopens the stream, and it never runs in that
+# case, so the arm silently sat frozen for the rest of a real session's throw 2. See
+# the no-fault reconnect at this file's main loop (searches for this constant). Not
+# per-tick (that would resend the URScript program in a tight retry storm if the
+# robot stays unreachable) - once per this many seconds is plenty since a healthy
+# reconnect is near-instant and a failed one already blocks ~8s (ServoStream.start's
+# accept_timeout) on its own.
+STREAM_RECONNECT_MIN_INTERVAL_S = 1.0
 
 # --- Idle wobble (2026-08-25, demo.py-only, --catch-move servo only) -----------
 # Purely cosmetic "catcher waiting" tell so an audience can see the stream is
@@ -872,6 +896,27 @@ DEMO_DUMP_WRIST_DEG = 180.0   # wrist3 (last joint) - spins the tool to tip the 
 DEMO_DUMP_SPEED = 1.5         # rad/s, joint-space
 DEMO_DUMP_ACCEL = 1.0         # rad/s^2
 DEMO_DUMP_ARRIVAL_TOL_M = 0.03  # how close to the wait pose (xyz only) before the dump fires
+
+# 2026-08-26 real incident: TARGET (TARGET_RB_ID) was never actually tracked all
+# session (Motive's "never sighted" default pose - see CLAUDE.md - reads as a
+# real but wrong, permanently-out-of-band position, not `find_target_pose()`
+# returning None), so pending_dump never cleared after any of the session's 7
+# catches - and since idle wobble is gated on `not pending_dump` (see its call
+# site), the wobble never ran once, all session, despite being enabled. The
+# TARGET search itself is deliberately unbounded (see the 2026-08-25 fix
+# comment at pending_dump's arrival check) - a real prop can take a few
+# seconds to nudge into view - so this does NOT shorten that search or clear
+# pending_dump early. It only lets the cosmetic wobble resume after this many
+# seconds of not finding TARGET, sharing the wait pose with an occasional (not
+# guaranteed) search attempt whenever a wobble lap happens to swing back near
+# center - an acceptable trade for a feature that has no reliability
+# requirement, versus leaving it silently dead for an entire session.
+# Shortened 4.0->1.0 2026-08-26 (real-session feedback: even 4s read as a
+# noticeable dead pause before the "catcher waiting" tell kicked in) - purely a
+# tunable tradeoff, not a technical floor. Lower still (even 0) is safe; it
+# only trades away how long a real TARGET prop gets sat still for before a
+# wobble lap starts interrupting the arrival-window search.
+DUMP_SEARCH_WOBBLE_GRACE_S = 1.0
 
 
 def dump_ball_sequence(rtde_r, dash, last_normal: "LastNormal") -> bool:
@@ -1619,8 +1664,8 @@ def main():
                              "window is updated synchronously from this poll loop (an interactive matplotlib "
                              "backend can't safely be driven from a background thread) - every artist is "
                              "pre-allocated once at startup and only mutated in place per throw, which "
-                             "measured ~90-130ms per update (~2.5x margin under ur_servo.DEFAULT_SOCK_TIMEOUT's "
-                             "0.3s) even in --catch-move servo. Data collection itself (per-tick TCP pose, "
+                             "measured ~90-130ms per update (comfortable margin under DEMO_SOCK_TIMEOUT_S's "
+                             "0.5s robot-side watchdog) even in --catch-move servo. Data collection itself (per-tick TCP pose, "
                              "per-guess target) is free the rest of the time - it reuses values the "
                              "feasibility/commit logic already computes every tick regardless of this flag. "
                              "Closing the window just stops future updates; the session keeps running.")
@@ -1946,7 +1991,7 @@ def main():
         nonlocal stream, limiter, orient_limiter, servo_target, servo_orient, last_tick_mono, last_servo_logged
         st = ServoStream(tcp_offset, args.robot_ip, args.servo_host_ip, args.servo_host_port,
                          DEFAULT_SERVO_DT, args.servo_lookahead, args.servo_gain,
-                         DEFAULT_STOP_ACCEL, DEFAULT_SOCK_TIMEOUT)
+                         DEFAULT_STOP_ACCEL, DEMO_SOCK_TIMEOUT_S)
         st.start()
         here = list(rtde_r.getActualTCPPose())
         stream = st
@@ -2134,6 +2179,7 @@ def main():
     attempts_ended = 0          # attempted throws that reached throw_end (denominator for the tally)
     last_print_wall = 0.0       # console print throttle (ticks are recorded regardless)
     last_safety_check = 0.0     # monotonic time of the last dashboard safety query
+    last_stream_reconnect_attempt = 0.0  # monotonic time of the last no-fault stream reopen attempt
     servo_hold_logged = False   # throttle envelope-hold spam within one throw
     servo_hold_since = None     # monotonic time the current unbroken hold streak started, or None
     servo_hold_escalated = False  # throttle the "stuck" escalation to once per hold streak
@@ -2143,6 +2189,7 @@ def main():
     throw_guesses: List[dict] = []      # --plot only: [{"n","point","kind","verdict"}, ...] this throw
     pending_dump = False         # demo.py only: caught_guess was True for the last throw - once the
                                   # arm is actually back at the wait pose, look for TARGET and dump
+    pending_dump_since = None   # monotonic time pending_dump last became True - see DUMP_SEARCH_WOBBLE_GRACE_S
     dump_skip_logged = False    # throttle "TARGET out of range" spam while waiting on one dump opportunity
     PRINT_MIN_INTERVAL_S = 0.08  # ~12 lines/s max during flight - readable at --poll-hz 50
     # A ball that disappears within this of the tool was (almost certainly) swallowed
@@ -2252,6 +2299,7 @@ def main():
                         prev_margin = None
                         non_improving_since = None
                         pending_dump = False  # fault preempts any dump owed for the throw that just ended
+                        pending_dump_since = None
                         dump_skip_logged = False
                         feasibility_cache = {}
                         abandoned = False
@@ -2292,6 +2340,36 @@ def main():
                                 break
                         emit_setpoint()
                         continue
+                    elif stream is None and servo_mode:
+                        # 2026-08-26 real incident: the stream can also die from a plain
+                        # send failure (robot-side watchdog ended its own program) with
+                        # the robot's safety mode never actually leaving NORMAL - the
+                        # branch above is the ONLY other thing that reopens the stream,
+                        # and it never runs when check_safety_mode() reports no fault, so
+                        # a session could sit here for the rest of its life with the arm
+                        # silently frozen (throw 2 of that session: full decision pipeline
+                        # ran normally, zero setpoints ever reached the robot). Rate-limited
+                        # (STREAM_RECONNECT_MIN_INTERVAL_S) rather than every tick, so a
+                        # genuinely unreachable robot doesn't get hammered with a fresh
+                        # program upload every ~8ms - a failed attempt already costs ~8s
+                        # of its own (ServoStream.start's accept_timeout) on top of that.
+                        if now_mono - last_stream_reconnect_attempt >= STREAM_RECONNECT_MIN_INTERVAL_S:
+                            last_stream_reconnect_attempt = now_mono
+                            print("    servo stream is down (no fault detected) - attempting to reopen...")
+                            try:
+                                start_servo_stream()
+                                print("    servo stream reopened.")
+                            except SystemExit as e:
+                                # Same trap as the fault-recovery reconnect above, but NOT
+                                # treated as session-ending here: unlike that path, there is
+                                # no confirmed real fault, so this may well be transient
+                                # (the robot momentarily busy, a network blip) - just log and
+                                # let the next cooldown tick try again rather than tearing
+                                # down a session over what might resolve on its own.
+                                print(f"    !! could not reopen servo stream: {e}")
+                                rec.log("servo_stream", state="reopen_failed", reason=str(e))
+                        emit_setpoint()
+                        continue
 
                 with STATE_LOCK:
                     target_id = s.target_id
@@ -2327,6 +2405,7 @@ def main():
                     servo_hold_since = None
                     servo_hold_escalated = False
                     pending_dump = False  # a new throw preempts any dump still owed - box is occupied again
+                    pending_dump_since = None
                     dump_skip_logged = False
                     committed_target = None
                     reaim_count = 0
@@ -2683,6 +2762,7 @@ def main():
                             print("returning to wait pose (servo)...\n")
                             if caught_guess:
                                 pending_dump = True  # fires once the shared arrival check below sees it get there
+                                pending_dump_since = now_mono
                         else:
                             print()  # never left the wait pose; nothing to announce
                     elif attempted and not args.dry_run:
@@ -2701,6 +2781,7 @@ def main():
                         print("at wait pose.\n")
                         if caught_guess:
                             pending_dump = True  # already at (or near) the wait pose - the check below fires it next tick
+                            pending_dump_since = now_mono
                     else:
                         print()
 
@@ -2739,6 +2820,7 @@ def main():
                         target_reason = None if hover_pose is None else check_catch_envelope(np.array(hover_pose[:3]))
                         if hover_pose is not None and target_reason is None:
                             pending_dump = False
+                            pending_dump_since = None
                             dump_skip_logged = False
                             print(f"    TARGET seen at ({target_xyz[0]:+.3f},{target_xyz[1]:+.3f}) - "
                                   f"moving over it to dump...")
@@ -2793,17 +2875,35 @@ def main():
                                 dump_skip_logged = True
 
                 # Idle wobble (--idle-wobble): only while genuinely idle, servo mode is
-                # up, and not mid-dump-trick - pending_dump's arrival check needs the
-                # arm to actually reach wait_xyz (within DEMO_DUMP_ARRIVAL_TOL_M, 3cm),
-                # which a 15cm-diameter orbit would only satisfy in passing. Every other
-                # idle tick (including the async return-to-wait leg right after a throw)
-                # gets it - servo_target already gets re-seeded to wait_xyz.copy() at
-                # each of those transitions above, so adding the offset here every tick
-                # is the entire mechanism; nothing upstream needs to know this exists.
-                # A throw starting overwrites servo_target itself (state != "idle" at
-                # that point), so the wobble stops being applied the same tick it commits
-                # - no separate stop/interrupt logic needed.
-                if args.idle_wobble and servo_mode and state == "idle" and not pending_dump:
+                # up, and not (freshly) mid-dump-trick - pending_dump's arrival check
+                # needs the arm to actually reach wait_xyz (within
+                # DEMO_DUMP_ARRIVAL_TOL_M, 3cm), which a 15cm-diameter orbit would only
+                # satisfy in passing. Every other idle tick (including the async
+                # return-to-wait leg right after a throw) gets it - servo_target
+                # already gets re-seeded to wait_xyz.copy() at each of those
+                # transitions above, so adding the offset here every tick is the
+                # entire mechanism; nothing upstream needs to know this exists. A
+                # throw starting overwrites servo_target itself (state != "idle" at
+                # that point), so the wobble stops being applied the same tick it
+                # commits - no separate stop/interrupt logic needed.
+                #
+                # 2026-08-26 fix: pending_dump used to suppress wobble unconditionally
+                # for as long as it stayed True - which the 2026-08-25 fix made
+                # unbounded (retries forever, see that comment at pending_dump's
+                # arrival check) so TARGET could be nudged into view late. A real
+                # session where TARGET was never tracked at all (Motive's
+                # never-sighted phantom pose - reads as a real but permanently
+                # out-of-band position, not "not tracked") hit exactly that: every
+                # catch set pending_dump and it never once cleared, so the wobble
+                # never ran, all session. DUMP_SEARCH_WOBBLE_GRACE_S lets the wobble
+                # resume after a few seconds of not finding TARGET without touching
+                # the search itself (still unbounded, still every tick) - it just
+                # shares the wait pose with an occasional, not guaranteed, search
+                # attempt whenever a wobble lap happens to swing back near center.
+                dump_wobble_ok = not pending_dump or (
+                    pending_dump_since is not None
+                    and now_mono - pending_dump_since >= DUMP_SEARCH_WOBBLE_GRACE_S)
+                if args.idle_wobble and servo_mode and state == "idle" and dump_wobble_ok:
                     servo_target = wait_xyz + idle_wobble_offset(
                         now_mono, args.idle_wobble_diameter, args.idle_wobble_period)
 
