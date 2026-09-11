@@ -57,8 +57,8 @@ revised as we prototype.
 
 ## Active work: UR10 (CB3) migration — 2026-08-24
 
-**Setting this up on another laptop** (fresh Ubuntu 22 + the switch, so someone
-else can run the demo): `docs/demo_setup_new_laptop.md` — install commands,
+**Setting this up on another laptop** (fresh Ubuntu 20.04 + the switch, so
+someone else can run the demo): `docs/demo_setup_new_laptop.md` — install commands,
 the two-subnets-on-one-NIC network config, Motive/robot checklists, run +
 troubleshooting. Not auto-loaded.
 

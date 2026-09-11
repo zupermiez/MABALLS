@@ -1,12 +1,12 @@
-# Running `demo.py` on a fresh Ubuntu 22 laptop
+# Running `demo.py` on a fresh Ubuntu 20.04 laptop
 
-Everything needed to take a clean Ubuntu 22.04 machine, plug it into the switch, and
+Everything needed to take a clean Ubuntu 20.04 machine, plug it into the switch, and
 run the ball-catching demo — written so someone other than the author can set it up
-and show the demo.
+and show the demo. (Every step is identical on 22.04; where 20.04's older Python or
+pip needs something extra, it's called out inline.)
 
 Rough time: **1–2 hours** the first time, most of it network + physical checks.
-Software install is ~15 minutes and has no compile steps. Ubuntu 20.04 and older
-dual-core laptops are also fine — see §7b for what differs.
+Software install is ~15 minutes and has no compile steps.
 
 Scope note: this covers the **UR10 (CB3) rig at the new location**, which is what
 `demo.py`'s defaults point at. SSH to the robot controller is **not** used and not
@@ -16,7 +16,7 @@ needed (`--pull-robot-logs` is off by default there).
 
 ## 0. What you need
 
-- Ubuntu 22.04 laptop. **One Ethernet port is enough** — everything goes through the
+- Ubuntu 20.04 laptop. **One Ethernet port is enough** — everything goes through the
   switch.
 - The Ethernet switch + 3 cables: laptop, Motive PC, UR10 control box.
 - Windows PC running Motive, cameras calibrated, with these assets in the scene
@@ -40,26 +40,33 @@ cd ~/MABALLS
 
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip
+pip install --upgrade pip setuptools wheel   # 20.04 ships pip 20.0.2 - do this FIRST
 pip install -r requirements.txt
 ```
 
-Why those apt packages: `python3-tk` is required for the live throw-plot window
-(matplotlib TkAgg — the only backend confirmed working in this project), and
-`alsa-utils` gives `aplay` for the audio cues in `beep.py` (it looks for `paplay` or
-`aplay` and stays silent if neither exists).
+**Nothing compiles, on 20.04's Python 3.8 either.** `ur_rtde==1.6.3` publishes a cp38
+manylinux wheel, and the `natnet` client is pure Python. `requirements.txt` leaves
+numpy/matplotlib/rich unpinned on purpose, so pip resolves them to the last releases
+that support 3.8 — numpy 1.24.4, matplotlib 3.7.5, rich 14.x — and the project only
+uses long-stable APIs from all three. Upgrading pip first matters: focal's pip is old
+enough to misresolve or refuse some of these wheels.
 
-Nothing compiles: `ur_rtde==1.6.3` ships a prebuilt cp310 wheel, which is exactly
-Ubuntu 22.04's system Python (3.10). Ubuntu 20.04 (Python 3.8) works too, with one
-extra step — see §7b.
+Why the apt packages: `python3-tk` is required for the live throw-plot window
+(matplotlib TkAgg — the only backend confirmed working in this project), `alsa-utils`
+gives `aplay` for the audio cues in `beep.py` (it looks for `paplay` or `aplay` and
+stays silent if neither exists), `netcat-openbsd` is only for the port check in §2.
 
 **Verify, no hardware needed:**
 
 ```bash
 python3 -c "import natnet, rtde_receive, dashboard_client, matplotlib, numpy; print('deps ok')"
-python3 trajectory.py        # offline self-test of the trajectory fit
+python3 trajectory.py             # offline self-test of the trajectory fit
 python3 ur_servo.py --self-test   # offline math/encoding checks, no robot
 ```
+
+If `live_view.py` later fails with `TypeError: unsupported operand type(s) for |`,
+the clone predates commit `97eb00a` — `git pull`. That was the repo's only line that
+required Python 3.10; everything else was already 3.8-clean.
 
 Remember: **every session starts with `source .venv/bin/activate`** in the repo
 directory. If a script dies with `ModuleNotFoundError`, that's almost always the
@@ -163,18 +170,28 @@ If safetymode isn't 1, clear the fault on the pendant (or `python3 ur_status.py 
 
 ---
 
-## 5. Optional one-time check: can this laptop hold the servo rate
+## 5. Can this laptop keep up? (run once, before the first session)
 
-`demo.py` streams setpoints at 125 Hz. A slower laptop is the one thing a machine swap
-can genuinely regress, and it shows up as late ticks:
+`demo.py` streams setpoints at 125 Hz while a NatNet receive thread runs alongside it,
+and — with `--plot` — redraws a matplotlib window on the main loop once per throw. That
+redraw measured 90–130 ms on the reference machine (a 4-core i7-8550U), against
+`demo.py`'s 0.5 s setpoint-stream silence budget. A slower or dual-core laptop (e.g. an
+i5-7300U, 2 cores / 4 threads) still fits that budget, but it's worth measuring rather
+than assuming:
 
 ```bash
 python3 ur_servo.py --bench
 ```
 
-Healthy looks like the validated reference run: a few thousand setpoints, **0 late
-ticks**, a few mm of lag. Run it with the area clear — this moves the arm through a
-canned sine sweep.
+This moves the arm through a canned sine sweep — clear the area first. Healthy is the
+validated reference run: a few thousand setpoints, **0 late ticks**, a few mm of lag.
+
+If late ticks show up:
+
+1. Run on **AC power**, not battery — U-series chips throttle hard on battery and this
+   is a realtime-ish workload.
+2. Run the demo with `--no-plot`; that removes the single biggest per-throw CPU spike.
+3. Only then consider `--servo-rate 100`.
 
 ---
 
@@ -219,7 +236,7 @@ Useful overrides:
 |---|---|
 | `--dry-run` | Full pipeline, zero motion. Good for checking mocap + gating without the arm. |
 | `--yes` | Skip the `go` prompt. |
-| `--no-plot` | No plot window (slightly less CPU). |
+| `--no-plot` | No plot window (slightly less CPU — see §5). |
 | `--no-record` | Don't write `catch_logs/*.jsonl`. |
 | `--catch-move movej --yaw-follow` | The older joint-space path; fall back here if servo mode misbehaves. |
 | `--rigid-body-id N` | If the ball's Motive id isn't 3. |
@@ -231,6 +248,9 @@ Useful overrides:
 | Symptom | Cause / fix |
 |---|---|
 | `ModuleNotFoundError` | Forgot `source .venv/bin/activate`. |
+| `python3 -m venv` fails on a fresh 20.04 | `sudo apt install python3-venv`. |
+| pip: "could not find a version that satisfies …" | 20.04's stock pip. `pip install --upgrade pip setuptools wheel` inside the venv, then retry. |
+| `live_view.py`: `TypeError: unsupported operand type(s) for |` | Clone predates `97eb00a`. `git pull`. |
 | Plot window never appears, matplotlib backend error | `sudo apt install python3-tk`. |
 | No sound cues | `sudo apt install alsa-utils` (harmless without it). |
 | `live_view.py` shows 0 fps / no frames | Wrong subnet or Motive streaming off. Check `ping 192.168.10.1`, Motive's Streaming pane, Windows firewall, and that the laptop really has `192.168.10.2`. |
@@ -238,53 +258,9 @@ Useful overrides:
 | `Never saw a valid reading of base rigid body id=7` | The base rigid body isn't tracked (occluded markers, or the asset was renamed/recreated in Motive). |
 | RTDE connect fails / `ur_status.py` hangs | Robot not powered, wrong cable in the switch, or laptop missing `192.168.20.2`. |
 | Arm moves to wait pose then everything freezes, no catches | Servo stream never opened — the robot couldn't reach `192.168.20.2:30099`. Check ufw and that the address is on the NIC. |
+| Late ticks in `ur_servo.py --bench`, jerky tracking | See §5: AC power, `--no-plot`, then `--servo-rate 100`. |
 | `Wait pose is outside the catch envelope` | The robot base moved relative to the base rigid body, or the wrong transform file is in use. Needs re-calibration, not a flag. |
-| Protective stop on almost every catch | Check the pendant's payload/CoG setting first (section 4.2) before touching speeds. |
-
----
-
-## 7b. If the laptop is Ubuntu 20.04 (Python 3.8) or an older dual-core CPU
-
-Both are fine — nothing about the setup changes structurally. Two things to know.
-
-**Python 3.8 (20.04's default).** The whole repo parses and runs as 3.8; there was
-exactly one 3.10-only line (`live_view.py`'s `DataFrame | None`), fixed. `ur_rtde`
-1.6.3 ships a cp38 wheel, and the `natnet` client is 3.8-clean, so still nothing
-compiles. `requirements.txt` leaves numpy/matplotlib/rich unpinned on purpose: on 3.8
-pip resolves them to the last versions that support it (numpy 1.24.x, matplotlib
-3.7.x) and the project only uses long-stable APIs from both. 20.04's bundled pip is
-old enough to be worth upgrading first:
-
-```bash
-sudo apt install -y git python3-venv python3-pip python3-tk alsa-utils netcat-openbsd
-python3 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip          # do this before -r requirements.txt on 20.04
-pip install -r requirements.txt
-```
-
-Everything else in this guide — nmcli network profile, Motive checks, run commands —
-is identical. (20.04 is past its standard end of life; the archive still serves these
-packages, but there's no reason to build the demo laptop on it if 22.04 is an option.)
-
-**An older dual-core (e.g. i5-7300U, 2 cores / 4 threads).** The reference laptop this
-was developed on is a 4-core i7-8550U, so expect similar single-thread speed and half
-the parallelism. The demo runs three things at once: the NatNet receive thread, the
-125 Hz servo loop, and — if `--plot` is on — a matplotlib redraw on the main loop that
-measured 90-130 ms per throw on the reference machine, against `demo.py`'s 0.5 s
-setpoint-stream silence budget. Even at 1.5x slower that still fits, but it is the
-margin worth checking rather than assuming.
-
-Before the first session on such a machine:
-
-1. Run it on AC power, not battery — U-series chips throttle hard on battery, and this
-   is a realtime-ish workload.
-2. `python3 ur_servo.py --bench` and read the late-tick count. **0 late ticks** is
-   healthy; a nonzero count means the laptop can't hold 125 Hz.
-3. If late ticks show up: run with `--no-plot` first (that removes the single biggest
-   per-throw CPU spike), and only then consider `--servo-rate 100`.
-
-If you want to compare machines up front, `ur_servo.py --bench` is the measurement —
-it's the same loop the demo uses, without a ball or perception in it.
+| Protective stop on almost every catch | Check the pendant's payload/CoG setting first (§4.2) before touching speeds. |
 
 ---
 
