@@ -729,7 +729,10 @@ from catch.py's loop) but needs its own real-session validation before becoming 
 default, per usual practice here. Full reasoning: `docs/debug_log.md` 2026-07-27.
 
 Current default operating point: `--catch-move servo --tilt-follow 20`
-(`--servo-max-speed 0.8 --servo-max-accel 4.0`, yaw-follow always on), recording and
+(`--servo-max-speed 1.2 --servo-max-accel 6.0` in `demo.py` as of 2026-09-11, user
+request — up from 0.8/4.0, still under the ~1.6 m/s ceiling measured on this UR10;
+`catch.py` still defaults to 0.8/4.0 — yaw-follow always on), idle wobble (`--no-idle-
+wobble` to disable, promoted to default in `demo.py` the same day), recording and
 the live throw-plot (`--plot`) on by default, `--base-rb-transform
 T_base_from_baseRB_v2.json` (live per-tick transform) on by default over the static
 `--transform-file T_base_from_mocap_v2.json`, `--poll-hz` following `--servo-rate`

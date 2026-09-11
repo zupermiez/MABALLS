@@ -277,19 +277,21 @@ STREAM_RECONNECT_MIN_INTERVAL_S = 1.0
 # Purely cosmetic "catcher waiting" tell so an audience can see the stream is
 # live and not frozen: while genuinely idle, servo_target orbits a small circle
 # around the wait pose instead of sitting dead still. NOT yet run on the real
-# arm - opt-in via --idle-wobble (see [[unvalidated_changes_policy]]-style
-# convention used throughout this file: --tilt-follow/--reaim-preempt/
-# --catch-move servo itself all started opt-in and were promoted to default
-# only after a real validated session).
+# arm when written - started opt-in per the convention used throughout this
+# file (--tilt-follow/--reaim-preempt/--catch-move servo itself all began
+# opt-in), and promoted to ON BY DEFAULT 2026-09-11 on user request; disable
+# with --no-idle-wobble.
 #
 # Deliberately slow/small enough to sit far under the servo RateLimiter's own
 # speed/accel caps regardless of which regime (chase vs. return) happens to be
 # active when idle - the wobble must never be what binds those, since a bound
 # wobble would fight the limiter's real job (bounding CATCH motion) for no
 # reason. At the defaults below: peak speed = 2*pi*r/T = 2*pi*0.075/6.0 =~
-# 0.079 m/s, centripetal accel = r*omega^2 =~ 0.082 m/s^2 - both under 10% of
-# even the slowest catch cap (--servo-max-speed 0.8, --servo-max-accel 4.0),
-# so the limiter tracks the circle with negligible lag rather than fighting it.
+# 0.079 m/s, centripetal accel = r*omega^2 =~ 0.082 m/s^2 - both a small
+# fraction of even the slowest catch cap (--servo-max-speed 1.2,
+# --servo-max-accel 6.0, and less again after --servo-return-mult scales them
+# down on the idle/return leg), so the limiter tracks the circle with
+# negligible lag rather than fighting it.
 IDLE_WOBBLE_DIAMETER_M = 0.15   # ~15cm circle, per user directive
 IDLE_WOBBLE_PERIOD_S = 6.0      # seconds per full lap - slow, visible, low-energy
 
@@ -1480,14 +1482,16 @@ def main():
                              "--catch-joint-accel or --speed/--accel respectively, not the --servo-* flags.")
 
     # Servo streaming (--catch-move servo) ----------------------------------------
-    parser.add_argument("--servo-max-speed", type=float, default=0.8,
-                        help="m/s cap for the servo setpoint stream (default 0.8 since 2026-07-27, pulled "
-                             "back down from the 1.2 movel/movej operating point ceiling as the day-to-day "
-                             "operating speed for servo mode). This is enforced host-side by "
+    parser.add_argument("--servo-max-speed", type=float, default=1.2,
+                        help="m/s cap for the servo setpoint stream (default 1.2 since 2026-09-11, user "
+                             "request - back up to the movel/movej operating point, and still under the "
+                             "~1.6 m/s ceiling measured on this UR10 with track_ball_servo.py on "
+                             "2026-08-26; was 0.8 from 2026-07-27). This is enforced host-side by "
                              "ur_servo.RateLimiter, NOT by servoj, which has no speed limit of its own.")
-    parser.add_argument("--servo-max-accel", type=float, default=4.0,
-                        help="m/s^2 cap for the servo setpoint stream (default 4.0, raised 2026-07-21 "
-                             "from 2.0 to match --accel's movel/movej operating point). Also sets the "
+    parser.add_argument("--servo-max-accel", type=float, default=6.0,
+                        help="m/s^2 cap for the servo setpoint stream (default 6.0 since 2026-09-11, user "
+                             "request; was 4.0, itself raised from 2.0 on 2026-07-21 to match --accel's "
+                             "movel/movej operating point). Also sets the "
                              "deceleration-aware approach: commanded speed never exceeds "
                              "sqrt(2*a*distance_remaining), so the setpoint cannot overshoot the "
                              "intercept.")
@@ -1553,11 +1557,11 @@ def main():
                              "otherwise the last commit is held so the arm can actually settle. Does not "
                              "touch the catch envelope/reach check, so full reach is unaffected - this "
                              "only governs when the last few cm of fine retargeting happen.")
-    parser.add_argument("--idle-wobble", action="store_true",
-                        help="'Catcher waiting' animation (2026-08-25, servo mode only): while genuinely "
-                             "idle, orbit the wait pose in a small circle instead of sitting dead still - "
-                             "a visible tell that the stream is live. Opt-in, NOT yet run on the real arm; "
-                             "promote to default only after that. Slow/small by design (see "
+    parser.add_argument("--no-idle-wobble", action="store_true",
+                        help="Turn OFF the 'catcher waiting' animation (2026-08-25, servo mode only): by "
+                             "default (on since 2026-09-11, user request) the tool orbits the wait pose in "
+                             "a small circle while genuinely idle instead of sitting dead still - a visible "
+                             "tell that the stream is live. Slow/small by design (see "
                              "IDLE_WOBBLE_DIAMETER_M/PERIOD_S) so it sits far under the servo limiter's "
                              "own speed/accel caps and never touches the catch envelope, feasibility, or "
                              "commit path - a throw still overwrites servo_target the instant it commits.")
@@ -1724,6 +1728,7 @@ def main():
                         help="Disable audio cues for predict/reaim/catch/miss events")
     args = parser.parse_args()
     args.plot = not args.no_plot  # --plot renamed to on-by-default --no-plot 2026-07-27; args.plot kept as the internal flag
+    args.idle_wobble = not args.no_idle_wobble  # same pattern, 2026-09-11: flag inverted to on-by-default, internal name kept
 
     servo_mode = args.catch_move == "servo"
     if servo_mode and args.early_commit_samples < 3:
