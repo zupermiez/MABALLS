@@ -75,7 +75,7 @@ import rtde_receive
 import dashboard_client
 from natnet import NatNetClient, DataFrame
 
-from frames import mocap_point_to_base
+from frames import mocap_point_to_base, base_from_mocap_via_rigid_body, quat_to_matrix
 from track_rigid_body import (
     load_transform, check_joint_margins, check_joint_speed_margins,
     JOINT_LIMIT_DEG, JOINT_WARN_MARGIN_DEG, JOINT_STOP_MARGIN_DEG,
@@ -83,8 +83,13 @@ from track_rigid_body import (
     JOINT_SPEED_WARN_MARGIN_DEG_S, JOINT_SPEED_STOP_MARGIN_DEG_S,
     MAX_REACH,
 )
-from catch import DEFAULT_WAIT_POSE, check_safety_mode, LastNormal, yaw_follow_orientation
+from catch import (
+    DEFAULT_WAIT_POSE, check_safety_mode, LastNormal, yaw_follow_orientation,
+    resolve_live_base_rb_transform,
+)
+from verify_base_rb import BaseRBState, make_base_rb_handler, BASE_RB_LOCK
 from ur_servo import RateLimiter, ServoStream, add_servo_args
+from speed_char import linear_speed
 
 # The ball's rigid-body id. Defaults to 3 for the same reason catch.py does:
 # with base and tool rigid bodies also in the scene, auto-selection is no longer
@@ -221,6 +226,15 @@ def build_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--transform", default="UR10_T_base_from_mocap.json",
                    help="Calibration file written by calibrate_frames.py")
+    p.add_argument("--base-rb-transform", default="UR10_T_base_from_baseRB.json",
+                   help="Path to calibrate_base_rb.py's output (default UR10_T_base_from_baseRB.json, "
+                        "on by default since 2026-08-24 - pass an empty string to fall back to the "
+                        "static --transform instead). When set, base<-mocap is recomputed every tick "
+                        "from a second tracked rigid body mounted on the robot's fixed base "
+                        "(frames.base_from_mocap_via_rigid_body) instead of loaded once from "
+                        "--transform - matches catch.py/demo.py, and lets the rig be physically "
+                        "repositioned without rerunning calibrate_frames.py, as long as that rigid "
+                        "body stays fixed to the base.")
     p.add_argument("--rigid-body-id", type=int, default=DEFAULT_BALL_RB_ID,
                    help=f"Ball rigid-body id (default {DEFAULT_BALL_RB_ID})")
     p.add_argument("--server-ip", default="192.168.10.1", help="Motive host IP")
@@ -264,12 +278,38 @@ def main():
     dt = 1.0 / args.rate
 
     R, t_vec, tcp_offset, tool_rb_id = load_transform(args.transform)
-    print(f"transform: {args.transform} (tool rigid body id={tool_rb_id}, tcp_offset={tcp_offset})")
     if args.rigid_body_id == tool_rb_id:
         raise SystemExit(
             f"--rigid-body-id {args.rigid_body_id} is the ARM's own tool rigid body (per "
             f"{args.transform}). The arm would chase itself. Pass the ball's id instead."
         )
+
+    # base_rb_mode: recompute base<-mocap every tick from a base-mounted rigid body's
+    # LIVE pose instead of trusting the static --transform file, same as catch.py/
+    # demo.py (see resolve_live_base_rb_transform's docstring - a real incident there
+    # was exactly this file's stale-transform symptom: rig physically moved after
+    # calibration, static R/t silently wrong, target lands nowhere near the ball).
+    base_rb_mode = bool(args.base_rb_transform)
+    R_base_rb = t_base_rb = base_rb_id = None
+    if base_rb_mode:
+        with open(args.base_rb_transform) as f:
+            base_rb_data = json.load(f)
+        R_base_rb = np.array(base_rb_data["R"])
+        t_base_rb = np.array(base_rb_data["t"])
+        base_rb_id = base_rb_data["rigid_body_id"]
+        if args.rigid_body_id == base_rb_id:
+            raise SystemExit(
+                f"--rigid-body-id {args.rigid_body_id} is the base's own rigid body (per "
+                f"{args.base_rb_transform}). Pass the ball's id instead."
+            )
+        print(f"[LIVE] getting one settled reading of base rigid body id={base_rb_id} now, so the "
+              f"start pose isn't derived from a stale static transform...")
+        R, t_vec = resolve_live_base_rb_transform(args.server_ip, args.local_ip, args.unicast,
+                                                   base_rb_id, R_base_rb, t_base_rb)
+        print(f"transform: LIVE via base RB id={base_rb_id} ({args.base_rb_transform}), "
+              f"tool rigid body id={tool_rb_id}, tcp_offset={tcp_offset}")
+    else:
+        print(f"transform: {args.transform} (tool rigid body id={tool_rb_id}, tcp_offset={tcp_offset})")
 
     record_path = None
     if args.record is not None:
@@ -311,6 +351,9 @@ def main():
                           local_ip_address=args.local_ip,
                           use_multicast=not args.unicast)
     client.on_data_frame_received_event.handlers.append(make_handler(state, args.rigid_body_id))
+    rb_state = BaseRBState()
+    if base_rb_mode:
+        client.on_data_frame_received_event.handlers.append(make_base_rb_handler(rb_state, base_rb_id))
 
     print(INSTRUCTIONS.format(rb=args.rigid_body_id, below=args.below, speed=args.max_speed))
     if args.dry_run:
@@ -321,7 +364,9 @@ def main():
 
     limiter = RateLimiter(start_pose[:3], args.max_speed, args.max_accel)
     stream: Optional[ServoStream] = None
-    rec.log("run_start", transform=args.transform, ball_rb=args.rigid_body_id,
+    rec.log("run_start", transform=args.transform, base_rb_mode=base_rb_mode,
+            base_rb_transform=args.base_rb_transform, base_rb_id=base_rb_id,
+            ball_rb=args.rigid_body_id,
             wait_pose=wait_pose, below=args.below, rate=args.rate,
             max_speed=args.max_speed, max_accel=args.max_accel,
             servo_dt=args.servo_dt, lookahead=args.lookahead, gain=args.gain,
@@ -333,6 +378,15 @@ def main():
     last_safety_check = 0.0
     last_print = 0.0
     stop_reason = None
+    # Real achieved speed/accel, off getActualTCPSpeed() (same source speed_char.py
+    # reads its true peak from) - NOT the same thing as --max-speed/--max-accel,
+    # which only bound the COMMANDED setpoint. The rate limiter, servoj's own gain,
+    # and the ball's own hand-guided motion can all keep the arm well under its
+    # cap; this is how to see what actually happened.
+    peak_speed = 0.0
+    peak_accel = 0.0
+    prev_speed_vec = None
+    prev_speed_t = 0.0
 
     with client:
         client.run_async()
@@ -369,8 +423,29 @@ def main():
                         state.pos, state.valid, state.seen_wall, state.sample_t)
                     candidates = list(state.candidates)
 
+                # Recompute base<-mocap from the base RB's LIVE pose (catch.py/demo.py
+                # precedent). If it's not valid this tick (occlusion), keep the last-good
+                # R/t rather than falling back to anything - stale-but-consistent for one
+                # tick beats a discontinuous jump.
+                if base_rb_mode:
+                    with BASE_RB_LOCK:
+                        rb_pos, rb_rot, rb_valid = rb_state.latest_pos, rb_state.latest_rot, rb_state.latest_valid
+                    if rb_valid:
+                        R_mocap_rb = quat_to_matrix(rb_rot)
+                        R, t_vec = base_from_mocap_via_rigid_body(R_base_rb, t_base_rb, R_mocap_rb, np.array(rb_pos))
+
                 actual_pose = rtde_r.getActualTCPPose()
                 actual_xyz = np.array(actual_pose[:3])
+                actual_speed_vec = rtde_r.getActualTCPSpeed()
+                actual_speed = linear_speed(actual_speed_vec)
+                actual_accel = 0.0
+                if prev_speed_vec is not None and tick_start > prev_speed_t:
+                    actual_accel = linear_speed(
+                        [(actual_speed_vec[i] - prev_speed_vec[i]) / (tick_start - prev_speed_t)
+                         for i in range(3)])
+                prev_speed_vec, prev_speed_t = actual_speed_vec, tick_start
+                peak_speed = max(peak_speed, actual_speed)
+                peak_accel = max(peak_accel, actual_accel)
 
                 hold_reason = None
                 stale = seen_wall is None or (tick_start - seen_wall) > LOST_TRACKING_TIMEOUT
@@ -418,10 +493,13 @@ def main():
                         holding = True
                     if stream is not None:
                         stream.send(list(limiter.cmd) + wait_pose[3:6], servo=False)
-                    rec.log("hold", reason=hold_reason, actual=actual_xyz, t=sample_t)
+                    rec.log("hold", reason=hold_reason, actual=actual_xyz, t=sample_t,
+                            actual_speed=actual_speed, actual_accel=actual_accel)
                     if tick_start - last_print >= STATUS_PRINT_INTERVAL:
                         last_print = tick_start
-                        print(f"\rHOLD: {hold_reason[:96]:<96}", end="", flush=True)
+                        print(f"\rHOLD: {hold_reason[:70]:<70}  "
+                              f"speed={actual_speed:.2f}m/s peak={peak_speed:.2f}m/s{'':10}",
+                              end="", flush=True)
                 else:
                     holding = False
                     err = float(np.linalg.norm(desired - limiter.cmd))
@@ -451,13 +529,16 @@ def main():
                         lag = float(np.linalg.norm(actual_xyz - cmd_xyz))
                         rec.log("tick", t=sample_t, ball=np.array(pos), desired=desired,
                                 cmd=cmd_xyz, actual=actual_xyz, lag=lag,
-                                to_go=float(np.linalg.norm(desired - cmd_xyz)))
+                                to_go=float(np.linalg.norm(desired - cmd_xyz)),
+                                actual_speed=actual_speed, actual_accel=actual_accel)
                         if tick_start - last_print >= STATUS_PRINT_INTERVAL:
                             last_print = tick_start
                             warn = f"  JOINT WARN: {', '.join(joint_warnings)}" if joint_warnings else ""
                             print(f"\rcmd=({cmd_xyz[0]:+.3f},{cmd_xyz[1]:+.3f},{cmd_xyz[2]:+.3f})  "
                                   f"to_go={np.linalg.norm(desired - cmd_xyz) * 100:5.1f}cm  "
                                   f"lag={lag * 1000:5.1f}mm  reach={np.linalg.norm(cmd_xyz):.2f}m  "
+                                  f"speed={actual_speed:.2f}m/s peak={peak_speed:.2f}m/s  "
+                                  f"accel_peak={peak_accel:.1f}m/s2  "
                                   f"late={late}{warn}        ", end="", flush=True)
 
                 sleep_for = dt - (time.monotonic() - tick_start)
@@ -471,7 +552,8 @@ def main():
             print(f"\n\nstopping ({stop_reason or 'unknown'})...")
             if stream is not None:
                 stream.stop()
-            rec.log("run_end", reason=stop_reason or "unknown", ticks=ticks, late=late)
+            rec.log("run_end", reason=stop_reason or "unknown", ticks=ticks, late=late,
+                    peak_speed=peak_speed, peak_accel=peak_accel)
             rec.close()
             client.stop_async()
             rtde_r.disconnect()
@@ -479,6 +561,8 @@ def main():
 
     print(f"{ticks} ticks, {late} late ({100.0 * late / max(ticks, 1):.1f}%), "
           f"mocap frames seen: {state.frames}")
+    print(f"peak ACTUAL TCP speed: {peak_speed:.2f} m/s, peak ACTUAL accel: {peak_accel:.1f} m/s^2 "
+          f"(measured via getActualTCPSpeed(), not the commanded --max-speed/--max-accel caps)")
     if record_path:
         print(f"log: {record_path}")
 

@@ -1099,12 +1099,15 @@ def main():
                              "deceleration-aware approach: commanded speed never exceeds "
                              "sqrt(2*a*distance_remaining), so the setpoint cannot overshoot the "
                              "intercept.")
-    parser.add_argument("--servo-return-mult", type=float, default=1.0,
+    parser.add_argument("--servo-return-mult", type=float, default=0.7,
                         help="multiplier on --servo-max-speed/--servo-max-accel/--servo-base-rate-deg-s "
                              "applied ONLY while the stream is driving back to the wait pose (idle before "
                              "a throw, and after a throw ends) - not while tracking/chasing a live ball, "
-                             "which stays at the normal capped speed. Default 1.0 (2026-08-25, halved from "
-                             "2.0): the 2x-faster return was pulled back down to normal chase speed.")
+                             "which stays at the normal capped speed. Default 0.7 (2026-08-26, down from "
+                             "1.0: user asked for the return leg to run 30% slower than normal chase "
+                             "speed - it has no accuracy requirement, so there's no reason for it to be "
+                             "quick. History: was 2.0 [2x faster] until 2026-08-25, when it was halved "
+                             "back down to 1.0 [normal speed].")
     parser.add_argument("--servo-base-rate-deg-s", type=float, default=SERVO_BASE_RATE_DEG_S,
                         help=f"deg/s cap on the base joint implied by lateral setpoint motion (default "
                              f"{SERVO_BASE_RATE_DEG_S}). This is the servo-mode replacement for movej's "

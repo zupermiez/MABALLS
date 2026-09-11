@@ -397,9 +397,18 @@ def _verdict(r) -> str:
     return "miss"
 
 
+# Cheap proxy for "that was a long reach, not a precision miss" - straight-line
+# distance from the wait pose to the committed target, base-frame, no fit/lookup
+# involved. Doesn't need to be precise (see explain_miss), just cheap: one
+# np.linalg.norm on two points explain_miss already has in hand.
+EXCUSE_FAR_THROW_M = 0.35
+
+
 def explain_miss(guard_reason: Optional[str], attempted: bool, abandoned: bool,
                   refuse_reason: Optional[str], refuse_target: Optional[np.ndarray],
-                  result, history_head, ball_last_dist: Optional[float]) -> str:
+                  result, history_head, ball_last_dist: Optional[float],
+                  committed_target: Optional[np.ndarray] = None,
+                  wait_xyz: Optional[np.ndarray] = None) -> str:
     """demo.py only: a best-guess, data-backed one-liner for why a throw wasn't
     caught - pure console flavor for the demo audience, not a control input or
     anything logged as ground truth (the real mechanics are already in
@@ -407,41 +416,45 @@ def explain_miss(guard_reason: Optional[str], attempted: bool, abandoned: bool,
     chain the main loop itself used to reach "no catch", in order: release
     guard (never even eligible to commit) -> envelope refusal (commit was
     tried and rejected) -> no plane crossing / lost tracking (nothing to
-    commit to) -> chase-abort (committed, then fell behind) -> plain miss
-    distance (committed, arrived, still missed). Deliberately blunt and
-    second-person - "You threw too far", not "target reach exceeded envelope
-    bound" - so keep new branches in that voice rather than reusing the
-    precise machine-readable reason strings verbatim."""
+    commit to) -> chase-abort (committed, then fell behind) -> far throw
+    (committed, arrived, but the target was a long reach from wait pose) ->
+    plain miss distance (committed, arrived, still missed). Deliberately
+    blunt, second-person, and short - "you threw too far", not "target reach
+    exceeded envelope bound" - keep new branches in that voice."""
     if guard_reason is not None:
         if "hand/handled" in guard_reason:
-            return "you let go of that right next to me - that's a handoff, not a throw."
-        return "that one was headed away from me, not at me."
+            return "that was a handoff, not a throw."
+        return "that one wasn't even thrown at me."
 
     if not attempted:
         if refuse_reason is not None and refuse_target is not None:
             reach = float(np.linalg.norm(refuse_target))
             z = float(refuse_target[2])
             if reach > CATCH_MAX_REACH:
-                return f"you threw too far - {reach:.2f}m out, {reach - CATCH_MAX_REACH:.2f}m past my reach."
+                return "you threw too far."
             if reach < CATCH_MIN_REACH:
-                return f"you threw too close - only {reach:.2f}m out, right on top of me."
+                return "you threw too close."
             if z > CATCH_Z_MAX:
-                return "you threw too high - that sailed over my head."
+                return "you threw too high."
             if z < CATCH_Z_MIN:
-                return "you threw too low - that would've hit the stand."
-            return "that one was too far off to the side of me."
+                return "you threw too low."
+            return "you threw too far to the side."
         if result is not None and result.crossing_t is None:
-            return "you threw it on a path that never even reached my catch height."
+            return "that throw never reached my catch height."
         if history_head is not None and history_head.reason == "lost tracking":
-            return "I lost sight of the ball mid-flight - not on you."
-        return "I never got a good enough read on that one in time."
+            return "I lost sight of the ball."
+        return "I didn't get a good read on that one."
 
     if abandoned:
         return "you threw that too fast."
 
+    if (committed_target is not None and wait_xyz is not None
+            and float(np.linalg.norm(committed_target - wait_xyz)) > EXCUSE_FAR_THROW_M):
+        return "you threw too far."
+
     if ball_last_dist is not None:
-        return f"close, but I missed it by about {ball_last_dist * 100:.0f}cm."
-    return "not sure what happened there - just missed it."
+        return "close, but I missed it."
+    return "not sure what happened - just missed it."
 
 
 # Real bug found 2026-08-25 (first UR10 session with base_rb_mode live):
@@ -1478,12 +1491,15 @@ def main():
                              "deceleration-aware approach: commanded speed never exceeds "
                              "sqrt(2*a*distance_remaining), so the setpoint cannot overshoot the "
                              "intercept.")
-    parser.add_argument("--servo-return-mult", type=float, default=1.0,
+    parser.add_argument("--servo-return-mult", type=float, default=0.7,
                         help="multiplier on --servo-max-speed/--servo-max-accel/--servo-base-rate-deg-s "
                              "applied ONLY while the stream is driving back to the wait pose (idle before "
                              "a throw, and after a throw ends) - not while tracking/chasing a live ball, "
-                             "which stays at the normal capped speed. Default 1.0 (2026-08-25, halved from "
-                             "2.0): the 2x-faster return was pulled back down to normal chase speed.")
+                             "which stays at the normal capped speed. Default 0.7 (2026-08-26, down from "
+                             "1.0: user asked for the return leg to run 30% slower than normal chase "
+                             "speed - it has no accuracy requirement, so there's no reason for it to be "
+                             "quick. History: was 2.0 [2x faster] until 2026-08-25, when it was halved "
+                             "back down to 1.0 [normal speed].")
     parser.add_argument("--servo-base-rate-deg-s", type=float, default=SERVO_BASE_RATE_DEG_S,
                         help=f"deg/s cap on the base joint implied by lateral setpoint motion (default "
                              f"{SERVO_BASE_RATE_DEG_S}). This is the servo-mode replacement for movej's "
@@ -2701,7 +2717,8 @@ def main():
                                 # the plot window open.
                                 excuse = explain_miss(guard_reason, attempted, abandoned,
                                                        last_refuse_reason, last_refuse_target,
-                                                       last_result, history_head, ball_last_dist)
+                                                       last_result, history_head, ball_last_dist,
+                                                       committed_target, wait_xyz)
                         else:
                             # Never committed at all (guarded/refused/no crossing) - still a
                             # miss from the demo audience's point of view, just explain why

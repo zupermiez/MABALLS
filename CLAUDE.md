@@ -57,6 +57,11 @@ revised as we prototype.
 
 ## Active work: UR10 (CB3) migration — 2026-08-24
 
+**Setting this up on another laptop** (fresh Ubuntu 22 + the switch, so someone
+else can run the demo): `docs/demo_setup_new_laptop.md` — install commands,
+the two-subnets-on-one-NIC network config, Motive/robot checklists, run +
+troubleshooting. Not auto-loaded.
+
 Porting the catch pipeline to a different physical robot — a classic CB3 UR10 (not
 the UR12e/UR10e described below), at a new location. Full live status, phased
 checklist, and issues found so far: `docs/ur10_migration_roadmap.md` — not
@@ -99,6 +104,19 @@ account for the box's own radius (~0.15m) or tool orientation, so 0.45m of
 "reach" wasn't 0.45m of real clearance. This section otherwise hasn't been
 reconciled with current state — treat the numbers just given as more current than
 the rest of this "Active work" block, not as a full rewrite of it.
+
+**2026-08-26 — `track_ball_servo.py` fixed (was using a stale static transform
+after the mount stand moved; now defaults to live `--base-rb-transform` like
+`catch.py`/`demo.py`) and given real actual-motion telemetry
+(`getActualTCPSpeed()`-based peak speed/accel, not commanded values).** Using
+it, this UR10's **measured real ceiling under `servoj` streaming is ~1.6 m/s /
+~32 m/s²** (`--max-speed 2.0 --max-accel 10.0`, hand-guided) — both past
+`demo.py`'s validated default (`--servo-max-speed 0.8 --servo-max-accel 4.0`).
+The 32 m/s² reading was a real hard momentum-driven stop (tracking lost
+mid-fast-chase → abrupt hold → arm's own inertia bleeding off over several
+ticks), not a smooth ramp — treat 1.6 m/s / ~32 m/s² as an observed hard
+ceiling to approach with caution (hand on the E-stop), not a routine operating
+point. Full detail: `docs/debug_log.md` 2026-08-26.
 
 ## Hardware Reference
 
@@ -722,13 +740,17 @@ T_base_from_baseRB_v2.json` (live per-tick transform) on by default over the sta
 A real 2026-07-27 collision (tool vs. the base's mounting stand) tightened the catch
 envelope's z floor (`CATCH_Z_MIN` -0.25→0.119) — see Key safety rules.
 
-**Return-to-wait is 2x faster by default (2026-07-27).** The return leg has no
-accuracy requirement (arriving early is free), so it shouldn't be bound by the same
-conservative cap chosen for catch tracking. `--servo-return-mult` (default 2.0)
-scales `--servo-max-speed`/`--servo-max-accel`/`--servo-base-rate-deg-s` only while
-the stream is driving to the wait pose (idle, and after a throw ends) — `catch.py`'s
-`set_servo_return_mode()` flips the live `RateLimiter`'s caps back to normal the
-instant a throw commits. Separately, `--approach-speed`/`--approach-accel` (the
+**Return-to-wait speed is now 30% slower than normal chase speed
+(`--servo-return-mult` default 0.7, 2026-08-26, user request).** History: launched
+2026-07-27 at 2.0 (2x faster, on the theory that the return leg has no accuracy
+requirement — arriving early is free — so it shouldn't be bound by catch tracking's
+conservative cap); halved back to 1.0 (normal speed) 2026-08-25; now 0.7. `--servo-
+return-mult` scales `--servo-max-speed`/`--servo-max-accel`/`--servo-base-rate-deg-s`
+only while the stream is driving to the wait pose (idle, and after a throw ends) —
+`catch.py`'s `set_servo_return_mode()` flips the live `RateLimiter`'s caps back to
+normal the instant a throw commits. **Not yet run on the real arm at 0.7** — logic
+change only, mirrors the mechanism already validated at 1.0/2.0. Separately,
+`--approach-speed`/`--approach-accel` (the
 movej used for the one-time initial approach, fault recovery, and non-servo
 `--catch-move movel`/`movej`'s return-to-wait) doubled 1.5→3.0 rad/s /
 1.0→2.0 rad/s². Safe past the 120°/s base-joint max unlike a `movel`'s `--speed`:

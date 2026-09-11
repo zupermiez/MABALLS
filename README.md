@@ -30,3 +30,7 @@
 ## Status
 
 Working end to end on real hardware. Best measured catch rate over 62 throws: 81%.
+
+## Setup
+
+Running this on a fresh machine: **[docs/demo_setup_new_laptop.md](docs/demo_setup_new_laptop.md)** — a step-by-step install, network, Motive/robot checklist and run guide for the UR10 rig, written so someone other than the author can show the demo.

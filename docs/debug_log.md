@@ -1923,3 +1923,57 @@ Verified headless (`MPLBACKEND=Agg`) with synthetic throws covering: a miss
 with an excuse (bubble visible, red-tinted), a catch right after (bubble
 hides, badge updates), and a bare `catch.py`-style meta with no `"excuse"`
 key at all (no crash, bubble stays hidden). Not yet run on a real session.
+
+## 2026-08-26 — track_ball_servo.py stale-transform bug, and measured real UR10 speed/accel ceiling
+
+**Bug: `track_ball_servo.py` shot to a wrong position, requiring an e-stop.**
+Symptom: starting the script and picking the ball up (well inside the
+envelope) sent the arm somewhere unrelated instead of tracking it. Root
+cause: unlike `catch.py`/`demo.py` (both default to `--base-rb-transform
+UR10_T_base_from_baseRB.json`, recomputing base<-mocap every tick from a
+base-mounted rigid body's live pose), `track_ball_servo.py` only ever loaded
+the static `UR10_T_base_from_mocap.json` once at startup. The mount stand had
+been physically moved since that calibration, so every ball position got
+transformed through a silently-wrong `R`/`t` - a bad transform, not bad
+tracking. This is exactly the failure mode `resolve_live_base_rb_transform`'s
+own docstring warns about (real 2026-07-24 incident, same root cause, on
+`catch.py` before the flag existed there).
+
+Fix: ported the same live base-RB machinery into `track_ball_servo.py` -
+`--base-rb-transform` (defaults to `UR10_T_base_from_baseRB.json`, matching
+the other two scripts; `""` opts back out to the static file), one settled
+live reading at startup via `resolve_live_base_rb_transform`, a second NatNet
+handler for the base RB, and a per-tick `base_from_mocap_via_rigid_body`
+recompute (holding last-good `R`/`t` on occlusion, same as `catch.py`).
+Verified live via `--dry-run`: resolved base RB id=7 successfully, printed a
+sane current pose, no exceptions.
+
+**Measured real (not commanded) speed/accel ceiling.** Following that fix,
+tested how fast `--max-speed`/`--max-accel` could push the arm. Added actual-
+motion telemetry the script never had before: `rtde_receive.getActualTCPSpeed()`
+(same source `speed_char.py` reads its true peak from, not the commanded
+setpoint) plus a numerically-differenced accel, both now printed live
+(`speed=`/`peak=`/`accel_peak=` on the status line), logged per-tick under
+`--record`, and summarized at end of run.
+
+A `--max-speed 2.0 --max-accel 10.0` run (hand-guided ball chase, operator at
+the E-stop) measured a peak **ACTUAL** TCP speed of **1.59 m/s** and peak
+ACTUAL accel of **31.8 m/s²** - both well past the commanded caps ever
+implying they'd be reached smoothly, and past anything previously validated
+on this arm (`demo.py`'s proven default `--servo-max-speed 0.8
+--servo-max-accel 4.0`; the UR12e's own measured ceiling was ~1.2-1.3 m/s).
+Walking the log: the accel spike wasn't a smooth ramp - it happened right
+after a `lag=221.7mm` tick (the arm was still ~34.5cm behind a fast-moving
+setpoint when the ball's `tracking_valid` dropped out mid-chase), so the HOLD
+path cut the setpoint stream abruptly and the arm's real momentum had to bleed
+off over the next several ticks (`speed=1.07 → 0.66 → 0.26 → 0.00 m/s`) - a
+real, hard, momentum-driven deceleration, not a graceful one. `reach` also
+touched 1.08m against `track_rigid_body.py`'s `MAX_REACH=1.1` soft ceiling in
+the same stretch.
+
+**Treat 1.6 m/s / ~32 m/s² as this UR10's observed real ceiling under `servoj`
+streaming, not a target to run at routinely** - the failure mode that produced
+it (lost tracking mid-fast-chase → abrupt hold → hard physical stop) is a
+realistic one for a hand/perception-driven script, not a contrived edge case.
+Going near these numbers again should keep a hand on the E-stop and expect
+that specific failure shape.
