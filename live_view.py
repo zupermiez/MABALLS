@@ -10,6 +10,7 @@ import argparse
 import threading
 import time
 from collections import deque
+from typing import Optional
 
 from natnet import NatNetClient, DataFrame
 from rich.live import Live
@@ -19,7 +20,11 @@ from rich.panel import Panel
 
 FPS_WINDOW = deque(maxlen=180)  # (wall_time, frame_number) samples for rate calc
 STATE_LOCK = threading.Lock()
-LATEST_FRAME: DataFrame | None = None
+# Optional[...] rather than `DataFrame | None`: this annotation is evaluated at
+# runtime (module-level AnnAssign), and PEP 604 unions need Python 3.10+ - this
+# is the repo's only 3.10-ism, and it blocked the whole script on an Ubuntu
+# 20.04 (Python 3.8) demo laptop.
+LATEST_FRAME: Optional[DataFrame] = None
 
 
 def handle_frame(frame: DataFrame) -> None:

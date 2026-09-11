@@ -5,7 +5,8 @@ run the ball-catching demo — written so someone other than the author can set 
 and show the demo.
 
 Rough time: **1–2 hours** the first time, most of it network + physical checks.
-Software install is ~15 minutes and has no compile steps.
+Software install is ~15 minutes and has no compile steps. Ubuntu 20.04 and older
+dual-core laptops are also fine — see §7b for what differs.
 
 Scope note: this covers the **UR10 (CB3) rig at the new location**, which is what
 `demo.py`'s defaults point at. SSH to the robot controller is **not** used and not
@@ -49,7 +50,8 @@ Why those apt packages: `python3-tk` is required for the live throw-plot window
 `aplay` and stays silent if neither exists).
 
 Nothing compiles: `ur_rtde==1.6.3` ships a prebuilt cp310 wheel, which is exactly
-Ubuntu 22.04's system Python (3.10). All project code is 3.10-compatible.
+Ubuntu 22.04's system Python (3.10). Ubuntu 20.04 (Python 3.8) works too, with one
+extra step — see §7b.
 
 **Verify, no hardware needed:**
 
@@ -238,6 +240,51 @@ Useful overrides:
 | Arm moves to wait pose then everything freezes, no catches | Servo stream never opened — the robot couldn't reach `192.168.20.2:30099`. Check ufw and that the address is on the NIC. |
 | `Wait pose is outside the catch envelope` | The robot base moved relative to the base rigid body, or the wrong transform file is in use. Needs re-calibration, not a flag. |
 | Protective stop on almost every catch | Check the pendant's payload/CoG setting first (section 4.2) before touching speeds. |
+
+---
+
+## 7b. If the laptop is Ubuntu 20.04 (Python 3.8) or an older dual-core CPU
+
+Both are fine — nothing about the setup changes structurally. Two things to know.
+
+**Python 3.8 (20.04's default).** The whole repo parses and runs as 3.8; there was
+exactly one 3.10-only line (`live_view.py`'s `DataFrame | None`), fixed. `ur_rtde`
+1.6.3 ships a cp38 wheel, and the `natnet` client is 3.8-clean, so still nothing
+compiles. `requirements.txt` leaves numpy/matplotlib/rich unpinned on purpose: on 3.8
+pip resolves them to the last versions that support it (numpy 1.24.x, matplotlib
+3.7.x) and the project only uses long-stable APIs from both. 20.04's bundled pip is
+old enough to be worth upgrading first:
+
+```bash
+sudo apt install -y git python3-venv python3-pip python3-tk alsa-utils netcat-openbsd
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip          # do this before -r requirements.txt on 20.04
+pip install -r requirements.txt
+```
+
+Everything else in this guide — nmcli network profile, Motive checks, run commands —
+is identical. (20.04 is past its standard end of life; the archive still serves these
+packages, but there's no reason to build the demo laptop on it if 22.04 is an option.)
+
+**An older dual-core (e.g. i5-7300U, 2 cores / 4 threads).** The reference laptop this
+was developed on is a 4-core i7-8550U, so expect similar single-thread speed and half
+the parallelism. The demo runs three things at once: the NatNet receive thread, the
+125 Hz servo loop, and — if `--plot` is on — a matplotlib redraw on the main loop that
+measured 90-130 ms per throw on the reference machine, against `demo.py`'s 0.5 s
+setpoint-stream silence budget. Even at 1.5x slower that still fits, but it is the
+margin worth checking rather than assuming.
+
+Before the first session on such a machine:
+
+1. Run it on AC power, not battery — U-series chips throttle hard on battery, and this
+   is a realtime-ish workload.
+2. `python3 ur_servo.py --bench` and read the late-tick count. **0 late ticks** is
+   healthy; a nonzero count means the laptop can't hold 125 Hz.
+3. If late ticks show up: run with `--no-plot` first (that removes the single biggest
+   per-throw CPU spike), and only then consider `--servo-rate 100`.
+
+If you want to compare machines up front, `ur_servo.py --bench` is the measurement —
+it's the same loop the demo uses, without a ball or perception in it.
 
 ---
 
