@@ -1,7 +1,4 @@
 __pycache__/
 *.pyc
 .claude/scheduled_tasks.lock
-catch_logs/
-robot_logs/
-servo_logs/
 throw_plots/

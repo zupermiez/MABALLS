@@ -1,0 +1,11 @@
+name: (none)
+start: 2026-10-02 09:06:53
+end: 2026-10-02 10:00:30
+duration_s: 3217.0
+throws: 41
+caught: 21/39 attempted (heuristic: ball last seen <30cm from tool)
+dry_run: False
+catch_log: catch_logs/catch_log_20261002_090620.jsonl
+
+description:
+(none)
