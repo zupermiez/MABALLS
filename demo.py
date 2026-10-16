@@ -313,6 +313,8 @@ def rnd(x, nd: int = 4):
     """
     if x is None or isinstance(x, bool):
         return x
+    if isinstance(x, np.bool_):  # numpy comparisons yield np.bool_, which json can't encode
+        return bool(x)
     if isinstance(x, dict):
         return {k: rnd(v, nd) for k, v in x.items()}
     if isinstance(x, (list, tuple, np.ndarray)):
@@ -322,6 +324,16 @@ def rnd(x, nd: int = 4):
     if isinstance(x, (float, np.floating)):
         return round(float(x), nd)
     return x
+
+
+
+def _json_fallback(o):
+    """json.dumps default= hook: numpy scalars/arrays -> Python, anything else -> str."""
+    if isinstance(o, np.generic):
+        return o.item()
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    return str(o)
 
 
 class Recorder:
@@ -387,7 +399,14 @@ class Recorder:
                "t": rnd(t), "throw": self.throw, "ev": ev}
         for k, v in fields.items():
             rec[k] = rnd(v)
-        self.f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        # Logging must never take down the live loop: anything rnd() didn't normalise
+        # is written via _json_fallback, and any remaining failure drops just this line.
+        try:
+            line = json.dumps(rec, separators=(",", ":"), default=_json_fallback)
+        except Exception as e:
+            print(f"  [record] dropped {ev!r} log line: {type(e).__name__}: {e}")
+            return
+        self.f.write(line + "\n")
         self.f.flush()
 
     def close(self) -> None:

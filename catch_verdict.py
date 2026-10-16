@@ -129,7 +129,7 @@ class PostFlightWatch:
             dt = self.tail_t[-1] - self.tail_t[-4]
             if dt > 0:
                 vz = (self.tail_base[-1][2] - self.tail_base[-4][2]) / dt
-                upward_exit = vz > UPWARD_EXIT_VZ and self.old_dist is not None and self.old_dist < FAR_M
+                upward_exit = bool(vz > UPWARD_EXIT_VZ and self.old_dist is not None and self.old_dist < FAR_M)
 
         if len(far_idx) >= MIN_FAR_SAMPLES:
             caught = False
