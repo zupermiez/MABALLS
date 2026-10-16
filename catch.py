@@ -81,6 +81,7 @@ from natnet import NatNetClient, DataFrame
 
 from live_trajectory import STATE_LOCK, SharedState, add_release_detection_args, make_handler
 from trajectory import AXIS_NAMES, trim_ghost_tail
+from catch_verdict import PostFlightWatch, POST_WINDOW_S
 from frames import mocap_point_to_base, quat_to_matrix, base_from_mocap_via_rigid_body
 from ur_goto_raw import ROBOT_IP, SECONDARY_PORT, send_script, movel_absolute_script, movej_to_pose_script
 from calibrate_frames import send_urscript, set_tcp_script
@@ -984,7 +985,7 @@ def build_flight_report_manifest(out_dir: str, pulled_basenames: List[str], reco
 
 def wrap_up_session(session_start: float, session_end: float, throws: int,
                      record_path: Optional[str], args,
-                     catches: int = 0, attempts_ended: int = 0) -> None:
+                     catches: int = 0, attempts_ended: int = 0, catches_old: int = 0) -> None:
     """End-of-session bookkeeping: prompt for an optional name + a free-text
     description of how the session went, then pull the robot's own logs for that
     time window. Called once, after the NatNet/RTDE connections are torn down (see
@@ -1012,7 +1013,8 @@ def wrap_up_session(session_start: float, session_end: float, throws: int,
         f.write(f"end: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session_end))}\n")
         f.write(f"duration_s: {session_end - session_start:.1f}\n")
         f.write(f"throws: {throws}\n")
-        f.write(f"caught: {catches}/{attempts_ended} attempted (heuristic: ball last seen <30cm from tool)\n")
+        f.write(f"caught: {catches}/{attempts_ended} attempted (post-flight check, catch_verdict.py)\n")
+        f.write(f"caught_old_rule: {catches_old}/{attempts_ended} (ball last seen <30cm from tool)\n")
         f.write(f"dry_run: {args.dry_run}\n")
         if record_path:
             f.write(f"catch_log: {record_path}\n")
@@ -1783,6 +1785,42 @@ def main():
     # rate; misses were last seen 1.5m+ away. See docs/debug_log.md 2026-07-17.
     CAUGHT_LAST_SEEN_DIST_M = 0.30
     pred_window: deque = deque(maxlen=args.stability_window)
+    post_watch: Optional[PostFlightWatch] = None  # pending post-flight caught/missed verdict
+    clock_off = None            # min(monotonic - mocap t) over the current flight - puts tool
+                                # readings on the mocap clock for catch_verdict.py
+    catches_old = 0             # tally under the old last-seen-only rule (continuity with older logs)
+
+    def finish_verdict(preempted: bool = False, quiet: bool = False) -> None:
+        """Settle the pending post-flight caught/missed verdict (catch_verdict.py):
+        tally, console line, beep, catch_verdict log event, throw plot. Runs
+        POST_WINDOW_S after the flight ended, from the main loop - one judge() over
+        ~150 samples, well under a millisecond. preempted=True: a new throw started
+        inside the window - judge on what was seen so far and skip the ~100ms plot
+        redraw so it can't delay that throw's commit. quiet=True: session teardown."""
+        nonlocal post_watch, catches
+        w, post_watch = post_watch, None
+        with STATE_LOCK:
+            recent = [smp for smp in s.recent_samples if w.end_t < smp.t <= w.end_t + POST_WINDOW_S]
+        v = w.judge([(smp.t, mocap_point_to_base(np.array([smp.x, smp.y, smp.z]), R, t_vec))
+                     for smp in recent])
+        if v["caught"]:
+            catches += 1
+        if not quiet:
+            print(f"    {'CATCH!' if v['caught'] else 'missed'} ({v['why']})"
+                  f"   session: {catches}/{attempts_ended} attempted")
+            if not args.no_beep:
+                beep.play("catch" if v["caught"] else "miss")
+        rec.log("catch_verdict", t=w.end_t, preempted=preempted, window_s=POST_WINDOW_S,
+                session_catches=catches, session_attempts=attempts_ended, **v,
+                post_raw=[[smp.t, smp.x, smp.y, smp.z] for smp in recent],
+                tool=[[tt, *xyz] for tt, xyz in list(zip(w.tool_t, w.tool_xyz))[::4]])
+        ctx = w.ctx
+        meta = dict(ctx["meta"]) if ctx.get("meta") is not None else None
+        if plot_window is not None and meta is not None and not preempted and not quiet:
+            meta.update(caught_guess=v["caught"], session_catches=catches, session_attempts=attempts_ended)
+            plot_window.update(ctx["throw"], ctx["ball_base"], ctx["ball_t"], ctx["tcp_trace"],
+                               ctx["guesses"], meta=meta)
+
 
     def catch_move_script(pose: List[float], preempt: bool = False) -> str:
         """The one place a catch/correction move gets turned into URScript - movel
@@ -1938,6 +1976,17 @@ def main():
                     if rb_valid:
                         R_mocap_rb = quat_to_matrix(rb_rot)
                         R, t_vec = base_from_mocap_via_rigid_body(R_base_rb, t_base_rb, R_mocap_rb, np.array(rb_pos))
+
+                if state == "flight" and flight_buffer:
+                    off = now_mono - flight_buffer[-1].t
+                    clock_off = off if clock_off is None else min(clock_off, off)
+                # Pending post-flight verdict: sample the tool while its window is open,
+                # settle it once due - or right now if a new throw just started, before
+                # the per-throw state below gets reset for it.
+                if post_watch is not None:
+                    post_watch.add_tool(now_mono, rtde_r.getActualTCPPose())
+                    if post_watch.due(time.monotonic()) or (state == "flight" and last_state == "idle"):
+                        finish_verdict(preempted=(state == "flight"))
 
                 if target_id is None:
                     if candidate_ids:
@@ -2221,19 +2270,14 @@ def main():
                         last_base = mocap_point_to_base(np.array([last_s.x, last_s.y, last_s.z]), R, t_vec)
                         ball_last_dist = float(np.linalg.norm(last_base - np.array(end_tcp[:3])))
                         if attempted:
+                            # Old last-seen-only rule: still logged as caught_guess for
+                            # continuity with older logs, but the announced verdict (beep,
+                            # console, plot, tally) waits for the post-flight check
+                            # (catch_verdict.py, settled by finish_verdict()).
                             caught_guess = ball_last_dist < CAUGHT_LAST_SEEN_DIST_M
                             attempts_ended += 1
                             if caught_guess:
-                                catches += 1
-                                print(f"    CATCH! (ball last seen {ball_last_dist*100:.0f}cm from tool)"
-                                      f"   session: {catches}/{attempts_ended} attempted")
-                                if not args.no_beep:
-                                    beep.play("catch")
-                            else:
-                                print(f"    missed - ball last seen {ball_last_dist:.2f}m from tool"
-                                      f"   session: {catches}/{attempts_ended} attempted")
-                                if not args.no_beep:
-                                    beep.play("miss")
+                                catches_old += 1
                     rec.log("throw_end",
                             reason=history_head.reason if history_head else None,
                             duration=history_head.duration if history_head else None,
@@ -2253,6 +2297,9 @@ def main():
                     if history_head is not None and history_head.raw_samples:
                         rec.log("throw_samples", t=history_head.raw_samples[0].t,
                                 raw=[[s.t, s.x, s.y, s.z] for s in history_head.raw_samples])
+                    if post_watch is not None:
+                        finish_verdict(preempted=True)  # defensive - normally settled when this flight started
+                    ctx = dict(throw=rec.throw)
                     if plot_window is not None and history_head is not None and history_head.raw_samples:
                         # Trimmed, not raw: a ghost-marker tail (see trim_ghost_tail's
                         # docstring) is real, unedited data and belongs in the JSONL log
@@ -2264,14 +2311,24 @@ def main():
                             for s in plot_samples
                         ])
                         ball_t = np.array([s.t for s in plot_samples])
-                        plot_window.update(
-                            rec.throw, ball_base, ball_t, throw_tcp_trace, throw_guesses,
-                            meta=dict(attempted=attempted, caught_guess=caught_guess,
-                                     ball_last_dist_m=ball_last_dist, duration=history_head.duration,
-                                     samples=history_head.samples, catch_move=args.catch_move,
-                                     dry_run=args.dry_run, reason=history_head.reason,
-                                     session_catches=catches, session_attempts=attempts_ended),
-                        )
+                        ctx.update(ball_base=ball_base, ball_t=ball_t, tcp_trace=throw_tcp_trace,
+                                   guesses=throw_guesses,
+                                   meta=dict(attempted=attempted, caught_guess=caught_guess,
+                                             ball_last_dist_m=ball_last_dist, duration=history_head.duration,
+                                             samples=history_head.samples, catch_move=args.catch_move,
+                                             dry_run=args.dry_run, reason=history_head.reason,
+                                             session_catches=catches, session_attempts=attempts_ended))
+                    if attempted and caught_guess is not None:
+                        # Verdict deferred POST_WINDOW_S - see catch_verdict.py / finish_verdict().
+                        tail = trim_ghost_tail(history_head.raw_samples)[-4:]
+                        post_watch = PostFlightWatch(
+                            history_head.raw_samples[-1].t, time.monotonic(), clock_off, last_base,
+                            [mocap_point_to_base(np.array([smp.x, smp.y, smp.z]), R, t_vec) for smp in tail],
+                            [smp.t for smp in tail], caught_guess, ball_last_dist, ctx)
+                        clock_off = None
+                    elif "meta" in ctx:
+                        plot_window.update(ctx["throw"], ctx["ball_base"], ctx["ball_t"], ctx["tcp_trace"],
+                                           ctx["guesses"], meta=ctx["meta"])
                     if servo_mode:
                         # Just re-aim the stream at the wait pose - no blocking movej,
                         # so the loop stays live for the next throw while the arm is
@@ -2313,11 +2370,16 @@ def main():
             stop_reason = "keyboard_interrupt"
         finally:
             print(f"\nstopping ({stop_reason or 'unknown'}) - sending stopl.")
+            if post_watch is not None:
+                try:
+                    finish_verdict(quiet=True)
+                except Exception:
+                    pass
             if attempts_ended:
                 print(f"session tally: {catches}/{attempts_ended} attempted throws caught "
-                      f"(heuristic - ball last seen <{CAUGHT_LAST_SEEN_DIST_M*100:.0f}cm from tool)")
+                      f"(post-flight check; old last-seen rule said {catches_old})")
             rec.log("run_end", reason=stop_reason or "unknown",
-                    catches=catches, attempts_ended=attempts_ended,
+                    catches=catches, attempts_ended=attempts_ended, catches_old=catches_old,
                     servo_setpoints_sent=(stream.sent if stream is not None else None))
             # Stream down FIRST: stop() asks the robot to stopj and end its program,
             # and the stopl below is a fresh script on :30002 that would otherwise
@@ -2349,7 +2411,7 @@ def main():
     # connections are fully closed - see wrap_up_session()'s docstring and the
     # module docstring's threading rule.
     wrap_up_session(session_start_wall, time.time(), rec.throw, record_path, args,
-                    catches=catches, attempts_ended=attempts_ended)
+                    catches=catches, attempts_ended=attempts_ended, catches_old=catches_old)
 
 
 if __name__ == "__main__":

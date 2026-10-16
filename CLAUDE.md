@@ -557,8 +557,11 @@ safety rules), on by default (`--catch-move movel` / `--no-yaw-follow` still
 available) — confirmed no catch-accuracy regression vs `movel`
 (`docs/debug_log.md` 2026-07-18 §3). `--poll-hz` default 50 (poll interval is
 pure decision latency); console prints throttled, ticks all recorded. `throw_end`
-logs a `caught_guess` (ball last seen <30cm from tool ⇒ swallowed by the box)
-plus a live session tally, and faulted throws also get their
+logs the old `caught_guess` (ball last seen <30cm from tool ⇒ swallowed by the box,
+kept for log continuity); the announced verdict (beep/console/plot/tally, and
+`demo.py`'s dump) comes 1.2s later from `catch_verdict.py` (2026-10-16), which
+keeps watching after the flight and overturns a catch if the ball is seen
+escaping the box - `catch_verdict` events, not yet checked against ground truth. Faulted throws also get their
 `throw_end`/`throw_samples` logged post-fault-clear. `--dry-run` logs every
 decision with zero motion; confirmation prompt before the first move. Keep the
 heavy fit off the socket-recv thread (existing threading rule). **Must

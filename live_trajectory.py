@@ -122,6 +122,10 @@ class SharedState:
     refractory_until: Optional[float] = None
 
     history: Deque[FlightRecord] = field(default_factory=lambda: deque(maxlen=8))
+    # Every accepted sample, any state (~4s @120Hz). Lets a consumer look at what
+    # the ball did right AFTER a flight ended without per-tick polling - see
+    # catch_verdict.py. Append-only on the callback thread; copy under STATE_LOCK.
+    recent_samples: Deque[Sample] = field(default_factory=lambda: deque(maxlen=480))
 
     fps_window: Deque[tuple] = field(default_factory=lambda: deque(maxlen=180))
 
@@ -215,6 +219,7 @@ def make_handler(s: SharedState, args):
 
             s.last_sample_t = t
             sample = Sample(t, *rb.pos)
+            s.recent_samples.append(sample)
 
             if s.refractory_until is not None and t >= s.refractory_until:
                 s.refractory_until = None
