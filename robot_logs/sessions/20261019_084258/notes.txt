@@ -1,0 +1,12 @@
+name: (none)
+start: 2026-10-19 08:42:58
+end: 2026-10-19 09:39:15
+duration_s: 3376.6
+throws: 14
+caught: 5/11 attempted (post-flight check, catch_verdict.py)
+caught_old_rule: 4/11 (ball last seen <30cm from tool)
+dry_run: False
+catch_log: catch_logs/catch_log_20261019_084250.jsonl
+
+description:
+(none)

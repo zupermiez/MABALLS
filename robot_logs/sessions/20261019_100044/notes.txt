@@ -1,0 +1,12 @@
+name: (none)
+start: 2026-10-19 10:00:44
+end: 2026-10-19 10:59:31
+duration_s: 3526.3
+throws: 83
+caught: 21/77 attempted (post-flight check, catch_verdict.py)
+caught_old_rule: 23/77 (ball last seen <30cm from tool)
+dry_run: False
+catch_log: catch_logs/catch_log_20261019_100033.jsonl
+
+description:
+normal level of catching

@@ -1,0 +1,12 @@
+name: (none)
+start: 2026-10-19 09:39:31
+end: 2026-10-19 09:55:12
+duration_s: 941.6
+throws: 25
+caught: 9/20 attempted (post-flight check, catch_verdict.py)
+caught_old_rule: 11/20 (ball last seen <30cm from tool)
+dry_run: False
+catch_log: catch_logs/catch_log_20261019_093920.jsonl
+
+description:
+last oneso far that arm got locked cause out of reach

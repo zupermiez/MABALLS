@@ -1,0 +1,12 @@
+name: (none)
+start: 2026-10-16 13:08:43
+end: 2026-10-16 13:08:56
+duration_s: 13.2
+throws: 1
+caught: 1/1 attempted (post-flight check, catch_verdict.py)
+caught_old_rule: 1/1 (ball last seen <30cm from tool)
+dry_run: False
+catch_log: catch_logs/catch_log_20261016_130835.jsonl
+
+description:
+new feature caused crash

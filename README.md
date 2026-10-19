@@ -34,3 +34,7 @@ Working end to end on real hardware. Best measured catch rate over 62 throws: 81
 ## Setup
 
 Running this on a fresh machine: **[docs/demo_setup_new_laptop.md](docs/demo_setup_new_laptop.md)** — a step-by-step install, network, Motive/robot checklist and run guide for the UR10 rig, written so someone other than the author can show the demo.
+
+## Something not working?
+
+**[docs/troubleshooting_guide.md](docs/troubleshooting_guide.md)** — orientation + a symptom→cause→fix table for anyone new to the project, written so it can also be pasted whole into an AI chat as context when asking for help.

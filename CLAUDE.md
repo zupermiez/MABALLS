@@ -62,6 +62,10 @@ someone else can run the demo): `docs/demo_setup_new_laptop.md` — install comm
 the two-subnets-on-one-NIC network config, Motive/robot checklists, run +
 troubleshooting. Not auto-loaded.
 
+**General debugging / first-time orientation** (repo already set up, something's
+not working, or you just want a self-contained dump of IDs/IPs/symptoms to paste
+into an AI chat): `docs/troubleshooting_guide.md`. Not auto-loaded.
+
 Porting the catch pipeline to a different physical robot — a classic CB3 UR10 (not
 the UR12e/UR10e described below), at a new location. Full live status, phased
 checklist, and issues found so far: `docs/ur10_migration_roadmap.md` — not

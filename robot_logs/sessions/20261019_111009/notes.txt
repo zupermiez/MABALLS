@@ -1,0 +1,12 @@
+name: (none)
+start: 2026-10-19 11:10:09
+end: 2026-10-19 11:19:13
+duration_s: 543.7
+throws: 14
+caught: 11/13 attempted (post-flight check, catch_verdict.py)
+caught_old_rule: 11/13 (ball last seen <30cm from tool)
+dry_run: False
+catch_log: catch_logs/catch_log_20261019_111002.jsonl
+
+description:
+new envelope bottom catches stay better
