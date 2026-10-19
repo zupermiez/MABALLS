@@ -107,6 +107,25 @@ class TrajectoryFit:
         dt = t - self.t0
         return tuple(axis.position(dt) for axis in self.axes)
 
+    def sample(self, ts: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Vectorized position AND velocity at absolute times `ts` -> ((N,3), (N,3)).
+        Used by catch_feasibility's catch-volume solver, which scores ~40 candidate
+        times per new mocap sample in one numpy pass."""
+        dt = np.asarray(ts, dtype=float)[:, None] - self.t0
+        p0 = np.array([ax.p0 for ax in self.axes])
+        v0 = np.array([ax.v0 for ax in self.axes])
+        a = np.array([ax.a for ax in self.axes])
+        return p0 + v0 * dt + 0.5 * a * dt * dt, v0 + a * dt
+
+    def time_of_descending_crossing(self, axis: int, value: float, after_t: float = 0.0) -> Optional[float]:
+        """Like time_of_plane_crossing, but the LATEST root after after_t - for a
+        ball under gravity on its up axis that is the downward pass, even while the
+        ball is still below `value` and rising toward it."""
+        fit = self.axes[axis]
+        roots_dt = _solve_quadratic(0.5 * fit.a, fit.v0, fit.p0 - value)
+        candidates = [self.t0 + r for r in roots_dt if self.t0 + r >= after_t]
+        return max(candidates) if candidates else None
+
     def time_of_plane_crossing(
         self, axis: int, value: float, after_t: float = 0.0
     ) -> Optional[float]:

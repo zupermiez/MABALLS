@@ -98,7 +98,7 @@ from ur_servo import (
 from catch_feasibility import (
     MoveTimeModel, fit_move_time_model, latest_speed_char_json, load_transform,
     check_feasibility, format_result, MIN_SAMPLES_FOR_CHECK, DEFAULT_CRUISE_SPEED,
-    DEFAULT_BOX_RADIUS, ROBOTMODE_IDLE,
+    DEFAULT_BOX_RADIUS, ROBOTMODE_IDLE, clamp_tilt, volume_height_at,
 )
 
 # --- Catch-motion safety envelope (base frame). Deliberately tighter than
@@ -159,6 +159,15 @@ CATCH_MAX_REACH = 1.20   # m from base - was 1.00; user directive 2026-07-15: at
 CATCH_Z_MIN = 0.15       # m base-frame - raised from 0.05 placeholder after physical check at the
                           # arm on 2026-08-24 (user observed clearance at 0.05, moved floor up for margin)
 CATCH_Z_MAX = CATCH_MAX_REACH  # m base-frame - effectively uncapped, see 2026-08-24 note above
+# Catch-volume ceiling (2026-10-19): set at startup to wait z + --catch-volume-height + 2cm,
+# so no catch target can ever be commanded above the volume. Applies to catch targets
+# (check_catch_envelope) only - not to the servo limiter's z band, which also carries the
+# dump/hover moves. None = no ceiling (--catch-volume-height 0).
+CATCH_Z_CEIL: Optional[float] = None
+CATCH_Z_CEIL_BUFFER = 0.02
+# Distance-dependent part of the same ceiling: {"height", "zero_dist", "full_dist", "z_lo"}
+# set at startup (see --volume-zero-height-dist), None = off.
+VOLUME_CFG: Optional[dict] = None
 # MAX_CATCH_MOVE (was 0.60m, capped distance from the wait pose) removed 2026-07-15 per
 # user directive - only the reach/z band above now bounds a catch target, so any target
 # within CATCH_MAX_REACH is attempted regardless of distance from the wait pose.
@@ -548,7 +557,7 @@ def yaw_follow_orientation(wait_pose: List[float], wait_xyz: np.ndarray,
 
 
 def tilt_follow_orientation(base_rv: List[float], impact_vel_base: np.ndarray,
-                            max_tilt_rad: float) -> List[float]:
+                            max_tilt_rad: float, point) -> List[float]:
     """Tilt the tool's mouth INTO the incoming ball trajectory: rotate the given
     orientation (world frame) so the mouth normal (assumed base +Z, mouth-up)
     leans toward the direction the ball arrives FROM (-v_impact), capped at
@@ -567,13 +576,21 @@ def tilt_follow_orientation(base_rv: List[float], impact_vel_base: np.ndarray,
         return list(base_rv)
     n_des = -v / vn                      # unit vector pointing back along the incoming path
     z = np.array([0.0, 0.0, 1.0])
-    cosang = float(np.clip(np.dot(z, n_des), -1.0, 1.0))
-    full = math.acos(cosang)
-    axis = np.cross(z, n_des)
-    an = float(np.linalg.norm(axis))
-    if an < 1e-9 or full < 1e-6:
+    full = math.acos(float(np.clip(n_des[2], -1.0, 1.0)))
+    hn = float(np.linalg.norm(n_des[:2]))
+    if hn < 1e-9 or full < 1e-6:
         return list(base_rv)             # ball falling straight down - mouth-up already ideal
-    angle = min(full, max_tilt_rad)
+    # Direction-dependent limits (2026-10-19 pose check: tilting the mouth 90deg toward
+    # the thrower hit the forearm) - see catch_feasibility.clamp_tilt / TILT_LIMIT_*.
+    # Outward = away from the base at the catch point.
+    pn = float(np.hypot(point[0], point[1]))
+    out_unit = np.array([point[0], point[1]]) / max(pn, 1e-9)
+    tau = clamp_tilt(full * n_des[:2] / hn, out_unit, max_tilt_rad)[0]
+    angle = float(np.linalg.norm(tau))
+    if angle < 1e-6:
+        return list(base_rv)
+    axis = np.cross(z, np.array([tau[0], tau[1], 0.0]))
+    an = float(np.linalg.norm(axis))
     q_tilt = np.concatenate([[math.cos(angle / 2)], (axis / an) * math.sin(angle / 2)])
     q_base = rotvec_to_quat(base_rv)
     rv = quat_to_rotvec(quat_multiply(q_tilt, q_base))
@@ -642,8 +659,20 @@ def check_release_guard(flight_buffer: List, R: np.ndarray, t_vec: np.ndarray,
 CATCH_MAX_AZIMUTH_DEG = 75.0
 
 
+def rotvec_to_matrix(rv) -> np.ndarray:
+    """Rodrigues: UR axis-angle rotation vector -> 3x3 rotation matrix."""
+    rv = np.asarray(rv, dtype=float)
+    th = float(np.linalg.norm(rv))
+    if th < 1e-12:
+        return np.eye(3)
+    k = rv / th
+    K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + math.sin(th) * K + (1.0 - math.cos(th)) * (K @ K)
+
+
 def check_catch_envelope(target_xyz: np.ndarray, wait_xyz: Optional[np.ndarray] = None,
-                         max_azimuth_deg: float = CATCH_MAX_AZIMUTH_DEG) -> Optional[str]:
+                         max_azimuth_deg: float = CATCH_MAX_AZIMUTH_DEG,
+                         volume_ceiling: bool = True) -> Optional[str]:
     """Return None if `target_xyz` (base frame) is a safe catch target, else a reason string.
 
     This is the single reviewed 'clamp-off' path CLAUDE.md requires for catch moves -
@@ -657,6 +686,14 @@ def check_catch_envelope(target_xyz: np.ndarray, wait_xyz: Optional[np.ndarray] 
     z = float(target_xyz[2])
     if not (CATCH_Z_MIN <= z <= CATCH_Z_MAX):
         return f"height z={z:+.2f}m outside catch band [{CATCH_Z_MIN:+.2f},{CATCH_Z_MAX:+.2f}]m (deck/singularity guard)"
+    if CATCH_Z_CEIL is not None and z > CATCH_Z_CEIL:
+        return f"height z={z:+.2f}m above the catch-volume ceiling {CATCH_Z_CEIL:+.2f}m"
+    if VOLUME_CFG is not None and volume_ceiling:
+        r_h = float(np.hypot(target_xyz[0], target_xyz[1]))
+        ceil_r = VOLUME_CFG["z_lo"] + float(volume_height_at(r_h, VOLUME_CFG)) + CATCH_Z_CEIL_BUFFER
+        if z > ceil_r:
+            return (f"height z={z:+.2f}m above the catch-volume ceiling {ceil_r:+.2f}m at {r_h:.2f}m "
+                    f"from the base (allowed height shrinks near the base)")
     if wait_xyz is not None:
         az_wait = math.atan2(float(wait_xyz[1]), float(wait_xyz[0]))
         az_tgt = math.atan2(float(target_xyz[1]), float(target_xyz[0]))
@@ -1612,6 +1649,26 @@ def main():
                              "wait pose, so the (rotationally symmetric, mouth-up) tool pans with the base "
                              "instead of the wrist fighting to hold a fixed world orientation through a side "
                              "sweep. Paired with --catch-move movej.")
+    parser.add_argument("--catch-volume-height", type=float, default=0.5, metavar="M",
+                        help="Catch VOLUME (2026-10-19, EXPERIMENTAL): instead of only where the ball "
+                             "crosses the catch plane, consider every point of the flight from the plane up "
+                             "to this many metres above it and pick the one the arm reaches with the most "
+                             "time to spare (move time and wrist-tilt time both count). 0 = old plane-only "
+                             "behaviour. A hard ceiling of plane + this + 2cm is added to the catch envelope.")
+    parser.add_argument("--volume-zero-height-dist", type=float, default=0.40, metavar="M",
+                        help="Catch volume: no height above the plane allowed closer than this "
+                             "(horizontal distance from the base axis). Rises linearly to the full "
+                             "--catch-volume-height at --volume-full-height-dist. Keeps the elbow from "
+                             "folding up for high targets close to the base. (Was 0.30/0.50; a real session "
+                             "still went brave at 0.40m -> 0.40/0.60, 2026-10-19.)")
+    parser.add_argument("--volume-full-height-dist", type=float, default=0.60, metavar="M",
+                        help="Catch volume: full --catch-volume-height allowed from this horizontal "
+                             "distance from the base outward (see --volume-zero-height-dist).")
+    parser.add_argument("--volume-max-tilt", type=float, default=90.0, metavar="DEG",
+                        help="Mouth tilt cap while the catch volume is on (replaces --tilt-follow's cap): "
+                             "a flat throw caught high gets the box turned up to this far toward the "
+                             "incoming ball. Volume points needing more tilt than this (ball still climbing "
+                             "steeply) are never chosen.")
     parser.add_argument("--tilt-follow", type=float, default=20.0, metavar="DEG",
                         help="Tilt the tool mouth into the incoming ball trajectory by up to DEG degrees "
                              "(default 20, on by daily use since 2026-07-27; pass 0 to disable). Recovers "
@@ -1868,6 +1925,18 @@ def main():
     catch_axis_idx = 1  # mocap Y (up)
     catch_value = args.catch_value if args.catch_value is not None else derive_catch_plane(wait_xyz, R, t_vec)
 
+    # Catch volume - see --catch-volume-height. mouth_in_tool is the box-mouth direction
+    # expressed in the tool frame, defined (as tilt_follow_orientation already assumes)
+    # by "the mouth faces base +Z at the wait pose"; rotating it by the live TCP
+    # orientation gives where the mouth points right now, for the wrist-tilt time model.
+    global CATCH_Z_CEIL, VOLUME_CFG
+    volume_on = args.catch_volume_height > 0.0
+    if volume_on:
+        CATCH_Z_CEIL = float(wait_xyz[2]) + args.catch_volume_height + CATCH_Z_CEIL_BUFFER
+        VOLUME_CFG = {"height": args.catch_volume_height, "zero_dist": args.volume_zero_height_dist,
+                      "full_dist": args.volume_full_height_dist, "z_lo": float(wait_xyz[2])}
+    mouth_in_tool = rotvec_to_matrix(wait_pose[3:6]).T @ np.array([0.0, 0.0, 1.0])
+
     # --plot: a live pop-up window (throw_plot.ThrowPlotWindow), not a saved file - see
     # its module docstring for why it has to be driven synchronously from THIS thread
     # (main) rather than a background worker. Built here (as soon as wait_xyz/the catch
@@ -1895,6 +1964,13 @@ def main():
     print(f"catch plane (mocap): {AXIS_NAMES[catch_axis_idx]} = {catch_value:.4f}")
     print(f"catch envelope: reach[{CATCH_MIN_REACH},{CATCH_MAX_REACH}]m  z[{CATCH_Z_MIN:+.2f},{CATCH_Z_MAX:+.2f}]m  "
           f"azimuth +/-{CATCH_MAX_AZIMUTH_DEG:.0f}deg of wait pose  (no cap on distance from wait pose)")
+    if volume_on:
+        print(f"catch VOLUME [EXPERIMENTAL]: plane .. +{args.catch_volume_height:.2f}m (ceiling z<="
+              f"{CATCH_Z_CEIL:+.3f}m), best-margin point, tilt<= {args.volume_max_tilt:.0f}deg, "
+              f"height 0 at <{args.volume_zero_height_dist:.2f}m from base -> full at "
+              f">={args.volume_full_height_dist:.2f}m")
+    else:
+        print("catch volume: off (plane only)")
     if servo_mode:
         print(f"catch SERVO STREAM [EXPERIMENTAL]: v<={args.servo_max_speed} m/s a<={args.servo_max_accel} m/s^2 "
               f"base<={args.servo_base_rate_deg_s:.0f} deg/s   |   orient<={args.servo_orient_max_rate_deg_s:.0f} "
@@ -1949,6 +2025,9 @@ def main():
             reaim=not args.no_reaim, reaim_min=args.reaim_min, reaim_max_count=args.reaim_max_count,
             reaim_preempt=args.reaim_preempt, reaim_preempt_min=args.reaim_preempt_min,
             tilt_follow_deg=args.tilt_follow,
+            catch_volume_height=args.catch_volume_height, volume_max_tilt_deg=args.volume_max_tilt,
+            catch_z_ceil=CATCH_Z_CEIL, volume_zero_height_dist=args.volume_zero_height_dist,
+            volume_full_height_dist=args.volume_full_height_dist,
             min_release_dist=args.min_release_dist, max_away_deg=args.max_away_deg,
             approach_speed=args.approach_speed, approach_accel=args.approach_accel,
             commit_samples=args.commit_samples, early_commit_samples=args.early_commit_samples,
@@ -2112,7 +2191,11 @@ def main():
         # real azimuth decision, and this check runs on intermediate path points
         # where float noise at exactly the boundary would otherwise freeze the arm
         # mid-catch for no reason.
-        env = check_catch_envelope(cmd_xyz, wait_xyz, CATCH_MAX_AZIMUTH_DEG + 1.0)
+        # Path points skip the distance-dependent volume ceiling (targets only): a
+        # straight path between two legal points (e.g. return-to-wait from a high
+        # catch) can cut through it, and holding there froze the arm mid-return on
+        # 2026-10-19. The flat CATCH_Z_CEIL still applies.
+        env = check_catch_envelope(cmd_xyz, wait_xyz, CATCH_MAX_AZIMUTH_DEG + 1.0, volume_ceiling=False)
         if env is None:
             # stream is None in --dry-run: the limiter, clamp and envelope check all
             # still run (so a replay session validates exactly the setpoint path a
@@ -2316,8 +2399,9 @@ def main():
             rv = yaw_follow_orientation(wait_pose, wait_xyz, point)
         else:
             rv = [wait_pose[3], wait_pose[4], wait_pose[5]]
-        if args.tilt_follow > 0.0 and impact_vel is not None:
-            rv = tilt_follow_orientation(rv, impact_vel, math.radians(args.tilt_follow))
+        tilt_cap = args.volume_max_tilt if volume_on else args.tilt_follow
+        if tilt_cap > 0.0 and impact_vel is not None:
+            rv = tilt_follow_orientation(rv, impact_vel, math.radians(tilt_cap), point)
         return rv
 
     def stable() -> Optional[np.ndarray]:
@@ -2551,13 +2635,27 @@ def main():
                                 reason=guard_reason)
 
                 if state == "flight" and guard_reason is None and len(flight_buffer) >= min_check_samples:
-                    current_tcp_xyz = np.array(rtde_r.getActualTCPPose()[:3])  # RTDE FK only - never mocap
+                    tcp_pose_now = rtde_r.getActualTCPPose()  # RTDE FK only - never mocap
+                    current_tcp_xyz = np.array(tcp_pose_now[:3])
                     if args.plot:
                         throw_tcp_trace.append((len(flight_buffer), current_tcp_xyz.copy()))
+                    volume = None
+                    if volume_on:
+                        volume = {"height": args.catch_volume_height,
+                                  "zero_dist": args.volume_zero_height_dist,
+                                  "full_dist": args.volume_full_height_dist,
+                                  "max_tilt_rad": math.radians(args.volume_max_tilt),
+                                  "wait_xyz": wait_xyz, "max_azimuth_deg": CATCH_MAX_AZIMUTH_DEG}
+                        if servo_mode:
+                            # Wrist tilt is rate-limited only in servo mode (OrientationRateLimiter);
+                            # movel/movej carry orientation along inside the move itself.
+                            volume["mouth_normal_now"] = rotvec_to_matrix(tcp_pose_now[3:6]) @ mouth_in_tool
+                            volume["orient_rate"] = math.radians(args.servo_orient_max_rate_deg_s)
+                            volume["orient_accel"] = math.radians(args.servo_orient_max_accel_deg_s2)
                     result = check_feasibility(
                         flight_buffer, catch_axis_idx, catch_value, R, t_vec, current_tcp_xyz,
                         model, CATCH_MIN_REACH, CATCH_MAX_REACH, args.margin, args.box_radius,
-                        cache=feasibility_cache,
+                        cache=feasibility_cache, volume=volume,
                     )
                     last_result = result  # feeds explain_miss() at throw_end regardless of outcome below
                     if result.crossing_t is not None:
@@ -2599,7 +2697,9 @@ def main():
                                 margin=result.margin, shortfall=result.shortfall,
                                 stable=trusted is not None, trusted_point=trusted,
                                 post_commit=attempted,
-                                commit_ready=len(flight_buffer) >= commit_samples_eff)
+                                commit_ready=len(flight_buffer) >= commit_samples_eff,
+                                vol_dz=result.vol_dz, tilt_deg=result.tilt_deg,
+                                orient_time=result.orient_time, n_cand=result.n_cand)
 
                         # Chase-abort trend check - see ABORT_NON_IMPROVING_S above. Only
                         # meaningful once a catch has actually been committed; a negative margin
@@ -2650,7 +2750,8 @@ def main():
                                         verdict="catch" if result.feasible else "possible" if result.possible else "early",
                                         target_pose=target_pose, speed=args.speed, accel=args.accel,
                                         move_kind=args.catch_move, yaw_follow=(not args.no_yaw_follow),
-                                        stable=trusted is not None, dry_run=args.dry_run)
+                                        stable=trusted is not None, dry_run=args.dry_run,
+                                        vol_dz=result.vol_dz, tilt_deg=result.tilt_deg)
                                 if servo_mode:
                                     # No program send, no socket connect, no move to
                                     # start - just a new destination for the stream
@@ -2699,7 +2800,8 @@ def main():
                                         # unconditional event per tick would bury the log.
                                         rec.log("retarget", t=flight_buffer[-1].t, n=result.n_samples,
                                                 drift=drift, target=new_point,
-                                                t_impact=result.time_to_impact)
+                                                t_impact=result.time_to_impact,
+                                                vol_dz=result.vol_dz, tilt_deg=result.tilt_deg)
                                         if not args.no_beep:
                                             beep.play("reaim")
                                         if args.plot:

@@ -1977,3 +1977,69 @@ it (lost tracking mid-fast-chase → abrupt hold → hard physical stop) is a
 realistic one for a hand/perception-driven script, not a contrived edge case.
 Going near these numbers again should keep a hand on the E-stop and expect
 that specific failure shape.
+
+## 2026-10-19 — Catch volume (vertical catching), demo.py only
+
+`demo.py --catch-volume-height 0.5 --volume-max-tilt 90` (both defaults; `0` = old
+plane-only). Instead of the single catch-plane crossing, `catch_feasibility.py`
+samples 64 times between now and the ball's *downward* plane crossing, keeps the
+points inside the slab [plane, plane+0.5m] that pass reach/azimuth and need ≤ max
+tilt (rising balls excluded), and picks the best margin from the arm's current
+position. Margin counts both move time and wrist-tilt time (servo mode's
+`OrientationRateLimiter`, 110°/s → a 90° tilt costs ~0.95s). User chose "best
+margin always" (not plane-first). 30ms hysteresis keeps the choice from hopping
+between heights on fit noise. Tilt cap in volume mode replaces `--tilt-follow`'s
+20°. Hard ceiling added to `check_catch_envelope()`: wait z + height + 2cm.
+Cost: ~0.7ms per new mocap sample (vs 0.38ms plane-only), ~0.1ms per cached tick.
+
+Offline checks: `volume_replay.py --self-test` (synthetic, all pass) and
+`volume_replay.py` (all 149 recorded throws in catch_logs/). The static transform
+file the runs name was ~0.77m off what they actually used (live base-RB, the stand
+moved), so the replay recovers each session's transform from its own logged tick
+targets (Kabsch, 2-12mm rms). **Result on today's throws: small gain** — judged at
+n=10 from the wait pose, feasible-or-possible 37 → 41 of 149, none lost; 16% of
+choices sit >5cm above the plane, tilt median ~35°. Higher points come *earlier* in
+the flight, so they only win when the plane crossing is out of reach (too close to
+the base / past the arm), not when the throw is just short or fast.
+
+Not yet run on the real arm. `volume_pose_check.py` steps through 20 slow static
+poses (volume corners × upright/out 45/out 90/side ±60) — run it first to check IK
+configuration flips, wrist2 singularity and box-vs-forearm clearance.
+Separate pre-existing quirk noticed: `time_of_plane_crossing()` returns the
+*earliest* crossing, so a ball still below the plane and rising would get its
+upward crossing as the plane target; harmless in practice (releases are above the
+plane), left unchanged.
+
+**Same day, after `volume_pose_check.py` on the real arm:** all 20 poses reached with no
+faults, but **mouth tilted 90° toward the thrower ("out 90") made the box hit the
+forearm** (wait-xy top and az+40 top; the wrist folds back toward the forearm). Out 45
+and side ±60 cleared everywhere. User: flat throws mostly come from the right side
+anyway (camera placement). Fix: direction-dependent tilt limits in
+`catch_feasibility.clamp_tilt()` / `TILT_LIMIT_*` — out ≤45°, side ≤60°, in (toward
+base, untested) ≤20°, mixed directions scaled onto the ellipse through those,
+never rotated. Used by both the volume solver and `demo.py`'s
+`tilt_follow_orientation()` (now takes the catch point to know "outward"), so the
+commanded orientation can't exceed what was checked. Replay unchanged (4 rescues).
+
+**Same day, after the first real volume session ("working really well"):** near the
+base it was too brave — e.g. throw 5 of `catch_log_20261019_123738` went +22cm at only
+0.36m horizontal from the base, folding the elbow a lot (at that height the 0.55m 3D
+reach floor no longer keeps targets away from the base axis). Fix: allowed height
+above the plane now ramps with horizontal distance from the base — 0 inside
+`--volume-zero-height-dist 0.30`, linear to the full height at
+`--volume-full-height-dist 0.50` (`catch_feasibility.volume_height_at()`, enforced in
+the solver and again in `check_catch_envelope()`). Replay (181 throws now): unchanged
+rescues, none lost.
+
+**Same day, E-stop session (`catch_log_20261019_124844`, throw 13):** still too brave at
+0.30/0.50. A 5.4 m/s throw, ~0.5s short from the first tick: the volume picked the
+"least hopeless" point (+23cm, 0.43m from the base, 50° base swing), servo early-commit
+chased it, chase-abort fired 0.16s later with the arm already up/inward. Then the
+return-to-wait stalled in a `servo_hold`: the per-setpoint envelope check applied the
+new distance ceiling to path points, and the straight path home cut through it. User
+E-stopped. Fixes: (1) above-plane points (>2cm) only eligible if the arm is ≤0.10s
+short (`VOLUME_MAX_DEFICIT_S`) — hopeless throws behave like plane-only (replayed
+throw 13: now stays at plane height, 0.53–0.60m out); (2) height ramp defaults moved
+to 0.40/0.60 (full height only from the wait radius outward); (3) servo path points
+skip the distance ceiling (`check_catch_envelope(volume_ceiling=False)`), targets
+still get it.

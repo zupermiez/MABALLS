@@ -153,6 +153,15 @@ class MoveTimeModel:
             t = 2 * math.sqrt(distance / self.accel)
         return t + self.latency
 
+    def estimate_array(self, distance: np.ndarray) -> np.ndarray:
+        """Vectorized estimate() - same trapezoid/triangle split, for the catch-volume
+        solver scoring many candidate points per tick."""
+        d = np.maximum(np.asarray(distance, dtype=float), 0.0)
+        d_accel = self.v_max**2 / (2 * self.accel)
+        trap = (d - 2 * d_accel) / self.v_max + 2 * (self.v_max / self.accel)
+        tri = 2 * np.sqrt(d / self.accel)
+        return np.where(d >= 2 * d_accel, trap, tri) + self.latency
+
     def reachable_distance(self, time_budget: float) -> float:
         """Inverse of estimate(): how far the arm could get in `time_budget` seconds.
 
@@ -237,6 +246,11 @@ class FeasibilityResult:
     possible: Optional[bool] = None    # not fully feasible, but within box_radius of the target at impact
     impact_vel_base: Optional[np.ndarray] = None  # ball velocity (m/s, base frame) AT the plane crossing
     note: Optional[str] = None
+    # Catch-volume mode only (volume_height > 0 and a valid candidate was chosen):
+    vol_dz: Optional[float] = None      # m the chosen point sits above the catch plane (0 = old plane catch)
+    tilt_deg: Optional[float] = None    # mouth tilt the chosen point needs (already capped at max_tilt)
+    n_cand: Optional[int] = None        # valid volume candidates this tick
+    orient_time: Optional[float] = None  # s the wrist needs to reach that tilt (part of `margin`)
 
 
 def _solve_intercept(
@@ -247,6 +261,7 @@ def _solve_intercept(
     t_vec: np.ndarray,
     min_reach: float,
     max_reach: float,
+    volume: Optional[dict] = None,
 ) -> dict:
     """The part of feasibility-checking that only changes when the ball fit does:
     fit the trajectory, solve for the catch-plane crossing, and transform the
@@ -272,11 +287,154 @@ def _solve_intercept(
     impact_vel_base = R @ vel_mocap
     reach = float(np.linalg.norm(catch_point_base))
     reachable = min_reach <= reach <= max_reach
-    return {
+    solved = {
         "n": len(flight_buffer), "last_t": last_t, "crossing_t": crossing_t,
         "catch_point_base": catch_point_base, "impact_vel_base": impact_vel_base,
         "reach": reach, "reachable": reachable, "note": None,
     }
+    if volume is not None and volume.get("height", 0.0) > 0.0:
+        solved["vol"] = _solve_volume_candidates(fit, last_t, catch_axis_idx, catch_value, R, t_vec,
+                                                 min_reach, max_reach, volume)
+    return solved
+
+
+# Catch volume (2026-10-19): instead of the single point where the ball crosses the
+# catch plane, score every point of the flight that lies inside the slab
+# [plane, plane + height] and pick the one the arm can reach with the most time to
+# spare (move time AND wrist-tilt time both count). VOLUME_N_CANDIDATES times are
+# sampled from now to the downward plane crossing - ~15ms apart on a 1s flight,
+# one numpy pass, cached per new mocap sample like the plane solve.
+VOLUME_N_CANDIDATES = 64
+VOLUME_HYSTERESIS_S = 0.03   # keep last tick's choice unless another beats it by this much margin
+# A point ABOVE the plane (more than VOLUME_PLANE_BAND_M up) is only eligible if the arm
+# is at most this far short of it. Without this, a hopeless throw (5.4 m/s, ~0.5s short
+# from the first tick, 2026-10-19) picked the "least hopeless" point - high and close to
+# the base - and early-commit chased it there before chase-abort fired: the brave lunge
+# that needed an E-stop. Hopeless throws now behave exactly like plane-only.
+VOLUME_MAX_DEFICIT_S = 0.25
+VOLUME_PLANE_BAND_M = 0.02
+
+# Direction-dependent mouth-tilt limits (2026-10-19 volume_pose_check.py on the real arm).
+# "Out" = mouth toward the thrower, i.e. away from the base at the target's azimuth: the
+# wrist folds back toward the forearm, and out 90 made the box HIT the forearm (twice);
+# out 45 cleared at every tested spot. Side +/-60 cleared everywhere. "In" (toward the
+# base) was never tested, so it keeps the old validated --tilt-follow 20. Mixed
+# directions are limited by the ellipse through these axis limits (clamp_tilt) - the
+# tilt is scaled down along its own direction, never rotated to a new direction.
+TILT_LIMIT_OUT_DEG = 45.0
+TILT_LIMIT_IN_DEG = 20.0
+TILT_LIMIT_SIDE_DEG = 60.0
+
+
+def clamp_tilt(tau: np.ndarray, out_unit: np.ndarray, max_tilt_rad: float) -> np.ndarray:
+    """Clamp horizontal tilt vector(s) `tau` (direction the mouth leans, length = tilt
+    angle in rad; shape (2,) or (N,2)) to the direction-dependent limits above and to
+    `max_tilt_rad` overall. `out_unit` = unit horizontal vector(s) pointing away from
+    the base at the catch point. Shared by the volume solver and demo.py's commanded
+    orientation (tilt_follow_orientation) so both agree on what's allowed."""
+    tau = np.atleast_2d(np.asarray(tau, dtype=float))
+    out = np.atleast_2d(np.asarray(out_unit, dtype=float))
+    t_out = np.sum(tau * out, axis=1)
+    t_side = out[:, 0] * tau[:, 1] - out[:, 1] * tau[:, 0]
+    lim_o = np.where(t_out >= 0, math.radians(TILT_LIMIT_OUT_DEG), math.radians(TILT_LIMIT_IN_DEG))
+    r = np.sqrt((t_out / lim_o) ** 2 + (t_side / math.radians(TILT_LIMIT_SIDE_DEG)) ** 2)
+    tau = tau * np.where(r > 1.0, 1.0 / np.maximum(r, 1e-12), 1.0)[:, None]
+    mag = np.linalg.norm(tau, axis=1)
+    return tau * np.where(mag > max_tilt_rad, max_tilt_rad / np.maximum(mag, 1e-12), 1.0)[:, None]
+
+
+def volume_height_at(r_h, volume: dict):
+    """Max height above the catch plane allowed at horizontal distance r_h (m) from the
+    base: 0 inside volume["zero_dist"], full volume["height"] beyond volume["full_dist"],
+    linear between. Missing keys = full height everywhere. Shared with demo.py's
+    envelope ceiling so the solver and the final gate agree."""
+    h = float(volume["height"])
+    z0, zf = volume.get("zero_dist"), volume.get("full_dist")
+    if z0 is None or zf is None or zf <= z0:
+        return h + 0.0 * np.asarray(r_h, dtype=float)
+    return h * np.clip((np.asarray(r_h, dtype=float) - z0) / (zf - z0), 0.0, 1.0)
+
+
+def _solve_volume_candidates(fit, last_t: float, catch_axis_idx: int, catch_value: float,
+                             R: np.ndarray, t_vec: np.ndarray, min_reach: float, max_reach: float,
+                             volume: dict) -> Optional[dict]:
+    """Fit-dependent half of the catch-volume solve (positions, velocities, needed
+    tilt, envelope validity per candidate time). The arm-position-dependent half
+    (distance/move time/margin/choice) runs every tick in _choose_volume_point()."""
+    t_end = fit.time_of_descending_crossing(catch_axis_idx, catch_value, after_t=last_t)
+    if t_end is None or t_end <= last_t:
+        return None
+    ts = np.linspace(last_t, t_end, VOLUME_N_CANDIDATES)
+    p_mocap, v_mocap = fit.sample(ts)
+    p = mocap_point_to_base(p_mocap, R, t_vec)
+    v = v_mocap @ R.T
+    z_lo = float(p[-1, 2])                     # plane height in base frame (the last sample IS the crossing)
+    # Height allowed above the plane shrinks near the base (2026-10-19 user request: high
+    # targets close in fold the elbow a lot). Full height from full_dist outward, none
+    # inside zero_dist, linear in between - horizontal distance from the base axis.
+    z_hi = z_lo + volume_height_at(np.hypot(p[:, 0], p[:, 1]), volume)
+
+    # Needed mouth tilt: angle between base +Z and the direction the ball comes FROM.
+    vn = np.linalg.norm(v, axis=1)
+    inc = -v / np.maximum(vn, 1e-9)[:, None]
+    full = np.arccos(np.clip(inc[:, 2], -1.0, 1.0))
+    max_tilt = float(volume["max_tilt_rad"])
+    horiz = inc[:, :2]
+    hn = np.linalg.norm(horiz, axis=1)
+    h_unit = np.where(hn[:, None] > 1e-9, horiz / np.maximum(hn, 1e-9)[:, None], 0.0)
+    pn = np.linalg.norm(p[:, :2], axis=1)
+    out_unit = p[:, :2] / np.maximum(pn, 1e-9)[:, None]
+    tau = clamp_tilt(full[:, None] * h_unit, out_unit, max_tilt)   # allowed tilt (see TILT_LIMIT_*)
+    tilt = np.linalg.norm(tau, axis=1)
+    tau_dir = tau / np.maximum(tilt, 1e-12)[:, None]
+    n_des = np.column_stack([np.sin(tilt)[:, None] * tau_dir, np.cos(tilt)])  # commanded mouth normal
+
+    reach = np.linalg.norm(p, axis=1)
+    valid = ((reach >= min_reach) & (reach <= max_reach)
+             & (p[:, 2] >= z_lo - 1e-6) & (p[:, 2] <= z_hi)
+             & (full <= math.pi / 2 + 1e-6)    # never catch a ball still climbing (coming up from below)
+             & (ts > last_t))
+    wait_xyz = volume.get("wait_xyz")
+    if wait_xyz is not None and volume.get("max_azimuth_deg") is not None:
+        az_w = math.atan2(float(wait_xyz[1]), float(wait_xyz[0]))
+        d_az = np.degrees(np.abs(np.arctan2(np.sin(np.arctan2(p[:, 1], p[:, 0]) - az_w),
+                                            np.cos(np.arctan2(p[:, 1], p[:, 0]) - az_w))))
+        valid &= d_az <= float(volume["max_azimuth_deg"])
+    return {"ts": ts, "p": p, "v": v, "tilt": tilt, "n_des": n_des, "reach": reach,
+            "valid": valid, "z_lo": z_lo}
+
+
+def _choose_volume_point(vol: dict, last_t: float, current_tcp_xyz: np.ndarray, model: MoveTimeModel,
+                         required_margin: float, volume: dict, prev_t: Optional[float]) -> Optional[int]:
+    """Per-tick half of the volume solve: margin for every valid candidate from the
+    arm's CURRENT position (and current mouth direction), best one wins, with
+    VOLUME_HYSTERESIS_S stickiness so the target doesn't hop between heights on fit
+    noise. Returns the candidate index (also leaves margins etc. in `vol`), or None."""
+    valid = vol["valid"]
+    if not valid.any():
+        return None
+    d = np.linalg.norm(vol["p"] - current_tcp_xyz, axis=1)
+    move_t = model.estimate_array(d)
+    orient_t = np.zeros_like(move_t)
+    n_now = volume.get("mouth_normal_now")
+    rate, acc = volume.get("orient_rate"), volume.get("orient_accel")
+    if n_now is not None and rate and acc:
+        ang = np.arccos(np.clip(vol["n_des"] @ np.asarray(n_now, dtype=float), -1.0, 1.0))
+        orient_t = np.where(ang >= rate * rate / acc, ang / rate + rate / acc, 2 * np.sqrt(ang / acc))
+    margin = (vol["ts"] - last_t) - np.maximum(move_t, orient_t) - required_margin
+    above = (vol["p"][:, 2] - vol["z_lo"]) > VOLUME_PLANE_BAND_M
+    eligible = valid & ~(above & (margin < -VOLUME_MAX_DEFICIT_S))
+    if not eligible.any():
+        return None                       # -> plain plane result, as if the volume were off
+    score = np.where(eligible, margin, -np.inf)
+    best = int(np.argmax(score))
+    if prev_t is not None:
+        idx = np.flatnonzero(eligible)
+        j = int(idx[np.argmin(np.abs(vol["ts"][idx] - prev_t))])
+        if score[j] >= score[best] - VOLUME_HYSTERESIS_S:
+            best = j
+    vol["_d"], vol["_move_t"], vol["_orient_t"], vol["_margin"] = d, move_t, orient_t, margin
+    return best
 
 
 def check_feasibility(
@@ -292,6 +450,7 @@ def check_feasibility(
     required_margin: float,
     box_radius: float,
     cache: Optional[dict] = None,
+    volume: Optional[dict] = None,
 ) -> FeasibilityResult:
     """`cache`, if given, is a caller-owned dict this function reads and updates.
     When cache["n"] already equals len(flight_buffer) - i.e. no new mocap sample
@@ -302,14 +461,36 @@ def check_feasibility(
     live position, which keeps changing tick over tick even between new ball
     samples. Pass a fresh {} per throw (not shared across throws) and None for
     call sites (e.g. this module's own --live console tool) that don't need the
-    optimization."""
+    optimization.
+
+    `volume`, if given with height > 0, switches on the catch volume (see
+    _solve_volume_candidates): keys height (m above the plane), max_tilt_rad, and
+    optionally wait_xyz + max_azimuth_deg (envelope wedge), mouth_normal_now (unit
+    base-frame vector the box mouth currently faces) + orient_rate/orient_accel
+    (rad/s, rad/s^2 - the wrist-tilt time model). Falls back to the plain plane
+    result when no volume point is valid."""
     if cache is not None and cache.get("n") == len(flight_buffer):
         solved = cache
     else:
-        solved = _solve_intercept(flight_buffer, catch_axis_idx, catch_value, R, t_vec, min_reach, max_reach)
+        solved = _solve_intercept(flight_buffer, catch_axis_idx, catch_value, R, t_vec, min_reach, max_reach,
+                                  volume)
         if cache is not None:
+            prev_t = cache.get("vol_prev_t")
             cache.clear()
             cache.update(solved)
+            if prev_t is not None:
+                cache["vol_prev_t"] = prev_t
+
+    vol = solved.get("vol")
+    if vol is not None:
+        prev_t = cache.get("vol_prev_t") if cache is not None else None
+        best = _choose_volume_point(vol, solved["last_t"], current_tcp_xyz, model, required_margin,
+                                    volume, prev_t)
+        if best is not None:
+            if cache is not None:
+                cache["vol_prev_t"] = float(vol["ts"][best])
+            return _volume_result(len(flight_buffer), solved["last_t"], vol, best, current_tcp_xyz,
+                                  model, box_radius)
 
     if solved["crossing_t"] is None:
         return FeasibilityResult(
@@ -353,6 +534,24 @@ def check_feasibility(
     )
 
 
+def _volume_result(n: int, last_t: float, vol: dict, i: int, current_tcp_xyz: np.ndarray,
+                   model: MoveTimeModel, box_radius: float) -> FeasibilityResult:
+    time_to_impact = float(vol["ts"][i] - last_t)
+    margin = float(vol["_margin"][i])
+    move_dist = float(vol["_d"][i])
+    feasible = margin >= 0
+    shortfall = max(0.0, move_dist - model.reachable_distance(time_to_impact))
+    return FeasibilityResult(
+        n_samples=n, crossing_t=float(vol["ts"][i]), time_to_impact=time_to_impact,
+        catch_point_base=vol["p"][i].copy(), reach=float(vol["reach"][i]), reachable=True,
+        move_dist=move_dist, move_time=float(vol["_move_t"][i]), margin=margin, feasible=feasible,
+        current_tcp=current_tcp_xyz, shortfall=shortfall,
+        possible=(not feasible) and shortfall <= box_radius, impact_vel_base=vol["v"][i].copy(),
+        vol_dz=float(vol["p"][i, 2] - vol["z_lo"]), tilt_deg=float(math.degrees(vol["tilt"][i])),
+        n_cand=int(vol["valid"].sum()), orient_time=float(vol["_orient_t"][i]),
+    )
+
+
 def format_result(r: FeasibilityResult) -> str:
     if r.crossing_t is None:
         return f"n={r.n_samples:3d}  no predicted catch-plane crossing ({r.note}) -> MISS"
@@ -367,6 +566,8 @@ def format_result(r: FeasibilityResult) -> str:
         f"dist_to_go={r.move_dist:.3f}m  t_impact={r.time_to_impact:+.3f}s  move_time={r.move_time:.3f}s  "
         f"margin={r.margin:+.3f}s"
     )
+    if r.vol_dz is not None:
+        base += f"  vol: +{r.vol_dz * 100:.0f}cm tilt={r.tilt_deg:.0f}deg ({r.n_cand} cand)"
     if not r.reachable:
         return f"{base}  -> MISS (unreachable: {r.note})"
     if r.feasible:

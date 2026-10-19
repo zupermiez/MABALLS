@@ -747,6 +747,19 @@ T_base_from_baseRB_v2.json` (live per-tick transform) on by default over the sta
 -0.0573)`. Plain `python3 catch.py` now reproduces the full daily command; pass
 `--no-record`/`--no-plot`/`--catch-move movej` etc. to override any single piece.
 
+**Catch volume (2026-10-19, `demo.py` only, on by default, NOT yet run on the real
+arm):** `--catch-volume-height 0.5` (0 = old plane-only) / `--volume-max-tilt 90`.
+Picks the best-margin point anywhere from the catch plane up to +0.5m along the
+predicted flight, tilting the box mouth toward the ball; hard ceiling wait z +
+0.52m in `check_catch_envelope()`. **Tilt limits by direction** (`catch_feasibility.
+TILT_LIMIT_*`, from the real-arm pose check): toward the thrower ≤45° (90° hit the
+forearm), sideways ≤60°, toward the base ≤20°. Allowed height also shrinks near the
+base: none inside 0.40m horizontal from the base, full from 0.60m
+(`--volume-zero-height-dist`/`--volume-full-height-dist`), and a point above the plane
+is only chosen if the arm is at most 0.25s short of it (hopeless throws stay plane-only). Run `volume_pose_check.py` (slow static poses)
+before the first throw session; `volume_replay.py [--self-test]` for offline
+checks. Details + replay result: `docs/debug_log.md` 2026-10-19.
+
 A real 2026-07-27 collision (tool vs. the base's mounting stand) tightened the catch
 envelope's z floor (`CATCH_Z_MIN` -0.25→0.119) — see Key safety rules.
 
